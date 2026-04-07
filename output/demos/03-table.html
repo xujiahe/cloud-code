@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="_common.css">
+  <style>
+    .panel-left canvas { cursor: default; }
+  </style>
+</head>
+<body>
+<div id="tab-bar"></div>
+
+<!-- Panel 0: 虚拟滚动 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c0" width="480" height="340" style="cursor:default"></canvas>
+    <div class="controls">
+      <span class="stat" id="stat0">滚动鼠标滚轮体验 10 万行虚拟滚动</span>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>虚拟滚动原理</h3>
+    <p>无论数据多少行，<strong>只绘制可视区域内的行</strong>。</p>
+    <p>起始行：<code>startRow = Math.floor(scrollY / rowHeight)</code></p>
+    <p>结束行：<code>endRow = startRow + Math.ceil(viewH / rowHeight) + 1</code></p>
+    <p>行 Y 坐标：<code>y = row * rowHeight - scrollY</code></p>
+    <p>10 万行数据与 100 行数据的渲染开销几乎相同。</p>
+  </div>
+</div>
+
+<!-- Panel 1: 冻结列 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c1" width="480" height="340"></canvas>
+    <div class="controls">
+      <span class="stat">滚动鼠标滚轮，观察冻结列效果</span>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>冻结列实现</h3>
+    <p>将表格拆分为 4 个区域，分别绘制：</p>
+    <p>• 左上角固定区域（不滚动）</p>
+    <p>• 表头（只随水平滚动）</p>
+    <p>• 冻结列（只随垂直滚动）</p>
+    <p>• 数据区域（双向滚动）</p>
+    <p>坐标公式：<code>x = colOffset - scrollX</code>，<code>y = row * rowH - scrollY</code></p>
+  </div>
+</div>
+
+<!-- Panel 2: 单元格合并 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c2" width="480" height="340"></canvas>
+    <div class="controls">
+      <button onclick="drawMerged()">重新绘制</button>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>单元格合并</h3>
+    <p>合并单元格宽度：<code>sum(colWidths[col..col+colspan-1])</code></p>
+    <p>合并单元格高度：<code>rowspan * rowHeight</code></p>
+    <p>被合并的子单元格跳过绘制（用 Set 标记）。</p>
+    <p>坐标：<code>x = colOffsets[col]</code>，<code>y = row * rowHeight</code></p>
+  </div>
+</div>
+
+<script src="_layout.js"></script>
+<script>
+initLayout('表格绘制专题', ['虚拟滚动 10万行', '冻结列', '单元格合并']);
+
+// ── 公共工具 ──
+const COL_WIDTHS = [60, 120, 100, 90, 110, 80, 130];
+const ROW_H = 32;
+const HEADER = ['序号', '姓名', '部门', '职级', '薪资(K)', '城市', '备注'];
+
+function makeData(n) {
+  const depts = ['工程','产品','设计','运营','市场'];
+  const cities = ['北京','上海','深圳','杭州','成都'];
+  return Array.from({length: n}, (_, i) => [
+    i + 1,
+    `员工${String(i+1).padStart(4,'0')}`,
+    depts[i % depts.length],
+    `P${(i % 7) + 3}`,
+    (15 + (i % 30)).toFixed(1),
+    cities[i % cities.length],
+    i % 5 === 0 ? '核心成员' : ''
+  ]);
+}
+
+function drawCell(ctx, text, x, y, w, h, opts = {}) {
+  const { bg = '#161b27', fg = '#e2e8f0', bold = false, align = 'left' } = opts;
+  ctx.fillStyle = bg; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = fg;
+  ctx.font = `${bold ? '600 ' : ''}13px -apple-system, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = align;
+  const tx = align === 'center' ? x + w/2 : align === 'right' ? x + w - 8 : x + 8;
+  // 溢出省略
+  let t = String(text);
+  const maxW = w - 16;
+  if (ctx.measureText(t).width > maxW) {
+    while (ctx.measureText(t + '…').width > maxW && t.length > 0) t = t.slice(0,-1);
+    t += '…';
+  }
+  ctx.fillText(t, tx, y + h/2);
+  ctx.textAlign = 'left';
+}
+
+function drawGrid(ctx, x, y, w, h) {
+  ctx.strokeStyle = '#1e2535'; ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+}
+
+// ── Panel 0: 虚拟滚动 ──
+const c0 = document.getElementById('c0');
+const ctx0 = c0.getContext('2d');
+const DATA0 = makeData(100000);
+let scrollY0 = 0;
+const totalH0 = DATA0.length * ROW_H;
+const colOffsets0 = COL_WIDTHS.reduce((a,w,i) => { a.push(i===0?0:a[i-1]+COL_WIDTHS[i-1]); return a; }, []);
+const totalW0 = colOffsets0.at(-1) + COL_WIDTHS.at(-1);
+
+function render0() {
+  const W = c0.width, H = c0.height;
+  const headerH = ROW_H;
+  const bodyH = H - headerH;
+  ctx0.clearRect(0, 0, W, H);
+  ctx0.fillStyle = '#0f1117'; ctx0.fillRect(0, 0, W, H);
+
+  // 表头
+  COL_WIDTHS.forEach((cw, ci) => {
+    drawCell(ctx0, HEADER[ci], colOffsets0[ci], 0, cw, headerH, { bg: '#1e2535', fg: '#94a3b8', bold: true });
+    drawGrid(ctx0, colOffsets0[ci], 0, cw, headerH);
+  });
+
+  // 数据行（虚拟滚动）
+  const startRow = Math.floor(scrollY0 / ROW_H);
+  const endRow = Math.min(DATA0.length, startRow + Math.ceil(bodyH / ROW_H) + 1);
+
+  for (let r = startRow; r < endRow; r++) {
+    const y = headerH + r * ROW_H - scrollY0; // y = row * rowHeight - scrollY
+    COL_WIDTHS.forEach((cw, ci) => {
+      const bg = r % 2 === 0 ? '#0f1117' : '#111827';
+      drawCell(ctx0, DATA0[r][ci], colOffsets0[ci], y, cw, ROW_H, { bg });
+      drawGrid(ctx0, colOffsets0[ci], y, cw, ROW_H);
+    });
+  }
+
+  // 滚动条
+  const ratio = bodyH / totalH0;
+  if (ratio < 1) {
+    const barH = Math.max(20, bodyH * ratio);
+    const barY = headerH + (scrollY0 / totalH0) * bodyH;
+    ctx0.fillStyle = 'rgba(148,163,184,0.3)';
+    ctx0.beginPath(); ctx0.roundRect(W - 8, barY, 6, barH, 3); ctx0.fill();
+  }
+
+  document.getElementById('stat0').textContent =
+    `第 ${startRow+1}~${endRow} 行 / 共 ${DATA0.length.toLocaleString()} 行（只渲染 ${endRow-startRow} 行）`;
+}
+
+c0.addEventListener('wheel', e => {
+  e.preventDefault();
+  scrollY0 = Math.max(0, Math.min(totalH0 - (c0.height - ROW_H), scrollY0 + e.deltaY));
+  render0();
+}, { passive: false });
+render0();
+
+// ── Panel 1: 冻结列 ──
+const c1 = document.getElementById('c1');
+const ctx1 = c1.getContext('2d');
+const DATA1 = makeData(500);
+let scrollY1 = 0, scrollX1 = 0;
+const FROZEN_COLS = 2;
+const frozenW = COL_WIDTHS.slice(0, FROZEN_COLS).reduce((s,w) => s+w, 0);
+const colOffsets1 = COL_WIDTHS.reduce((a,w,i) => { a.push(i===0?0:a[i-1]+COL_WIDTHS[i-1]); return a; }, []);
+
+function render1() {
+  const W = c1.width, H = c1.height;
+  const headerH = ROW_H;
+  ctx1.clearRect(0, 0, W, H);
+  ctx1.fillStyle = '#0f1117'; ctx1.fillRect(0, 0, W, H);
+
+  const startRow = Math.floor(scrollY1 / ROW_H);
+  const endRow = Math.min(DATA1.length, startRow + Math.ceil((H - headerH) / ROW_H) + 1);
+
+  // 数据区域（右下，双向滚动）
+  for (let r = startRow; r < endRow; r++) {
+    const y = headerH + r * ROW_H - scrollY1;
+    for (let ci = FROZEN_COLS; ci < COL_WIDTHS.length; ci++) {
+      const x = colOffsets1[ci] - scrollX1;
+      if (x + COL_WIDTHS[ci] < frozenW || x > W) continue;
+      const bg = r % 2 === 0 ? '#0f1117' : '#111827';
+      drawCell(ctx1, DATA1[r][ci], x, y, COL_WIDTHS[ci], ROW_H, { bg });
+      drawGrid(ctx1, x, y, COL_WIDTHS[ci], ROW_H);
+    }
+  }
+
+  // 表头（右上，只随水平滚动）
+  for (let ci = FROZEN_COLS; ci < COL_WIDTHS.length; ci++) {
+    const x = colOffsets1[ci] - scrollX1;
+    if (x + COL_WIDTHS[ci] < frozenW || x > W) continue;
+    drawCell(ctx1, HEADER[ci], x, 0, COL_WIDTHS[ci], headerH, { bg: '#1e2535', fg: '#94a3b8', bold: true });
+    drawGrid(ctx1, x, 0, COL_WIDTHS[ci], headerH);
+  }
+
+  // 冻结列（左下，只随垂直滚动）
+  for (let r = startRow; r < endRow; r++) {
+    const y = headerH + r * ROW_H - scrollY1;
+    let x = 0;
+    for (let ci = 0; ci < FROZEN_COLS; ci++) {
+      const bg = r % 2 === 0 ? '#131a26' : '#161d2e';
+      drawCell(ctx1, DATA1[r][ci], x, y, COL_WIDTHS[ci], ROW_H, { bg });
+      drawGrid(ctx1, x, y, COL_WIDTHS[ci], ROW_H);
+      x += COL_WIDTHS[ci];
+    }
+  }
+
+  // 左上角固定区域
+  let x = 0;
+  for (let ci = 0; ci < FROZEN_COLS; ci++) {
+    drawCell(ctx1, HEADER[ci], x, 0, COL_WIDTHS[ci], headerH, { bg: '#1a2535', fg: '#60a5fa', bold: true });
+    drawGrid(ctx1, x, 0, COL_WIDTHS[ci], headerH);
+    x += COL_WIDTHS[ci];
+  }
+
+  // 冻结列右侧分隔线
+  ctx1.strokeStyle = '#3b82f6'; ctx1.lineWidth = 2;
+  ctx1.beginPath(); ctx1.moveTo(frozenW, 0); ctx1.lineTo(frozenW, H); ctx1.stroke();
+}
+
+c1.addEventListener('wheel', e => {
+  e.preventDefault();
+  scrollY1 = Math.max(0, Math.min(DATA1.length * ROW_H - (c1.height - ROW_H), scrollY1 + e.deltaY));
+  scrollX1 = Math.max(0, scrollX1 + e.deltaX);
+  render1();
+}, { passive: false });
+render1();
+
+// ── Panel 2: 单元格合并 ──
+const c2 = document.getElementById('c2');
+const ctx2 = c2.getContext('2d');
+
+function drawMerged() {
+  const W = c2.width, H = c2.height;
+  ctx2.clearRect(0, 0, W, H);
+  ctx2.fillStyle = '#0f1117'; ctx2.fillRect(0, 0, W, H);
+
+  const cw = [80, 100, 90, 100, 90, 80];
+  const rh = 44;
+  const offsets = cw.reduce((a,w,i) => { a.push(i===0?0:a[i-1]+cw[i-1]); return a; }, []);
+
+  const tableData = [
+    ['季度','一月','二月','三月','Q1合计','同比'],
+    ['Q1','12.5','13.2','14.1','39.8','+8.2%'],
+    ['Q2','15.0','14.8','16.2','46.0','+15.6%'],
+    ['上半年','','','','85.8','+12.1%'],
+    ['Q3','17.1','16.5','18.0','51.6','+12.2%'],
+    ['Q4','19.2','20.1','21.5','60.8','+17.8%'],
+    ['下半年','','','','112.4','+15.2%'],
+    ['全年合计','','','','198.2','+13.8%'],
+  ];
+
+  // 合并配置：key="row,col" → {rowspan, colspan}
+  const merges = {
+    '0,0': {rowspan:1,colspan:1},
+    '3,1': {rowspan:1,colspan:3}, // 上半年 Q1~Q3 列合并
+    '6,1': {rowspan:1,colspan:3}, // 下半年
+    '7,0': {rowspan:1,colspan:4}, // 全年合计
+  };
+
+  // 构建跳过集合
+  const skip = new Set();
+  Object.entries(merges).forEach(([key, {rowspan, colspan}]) => {
+    const [r, c] = key.split(',').map(Number);
+    for (let dr = 0; dr < rowspan; dr++) for (let dc = 0; dc < colspan; dc++) {
+      if (dr || dc) skip.add(`${r+dr},${c+dc}`);
+    }
+  });
+
+  tableData.forEach((row, ri) => {
+    row.forEach((cell, ci) => {
+      if (skip.has(`${ri},${ci}`)) return;
+      const m = merges[`${ri},${ci}`] ?? {rowspan:1,colspan:1};
+      const x = offsets[ci];                                          // x = colOffsets[col]
+      const y = ri * rh;                                              // y = row * rowHeight
+      const w = cw.slice(ci, ci + m.colspan).reduce((s,v)=>s+v, 0); // colspan 宽度累加
+      const h = m.rowspan * rh;                                       // rowspan 高度
+
+      const isHeader = ri === 0 || ci === 0;
+      const isMerged = merges[`${ri},${ci}`] && (m.rowspan > 1 || m.colspan > 1);
+      const bg = isHeader ? '#1e2535' : isMerged ? '#1a2f1a' : ri % 2 === 0 ? '#0f1117' : '#111827';
+      const fg = isHeader ? '#94a3b8' : isMerged ? '#34d399' : '#e2e8f0';
+
+      ctx2.fillStyle = bg; ctx2.fillRect(x, y, w, h);
+      ctx2.fillStyle = fg;
+      ctx2.font = `${isHeader || isMerged ? '600 ' : ''}13px sans-serif`;
+      ctx2.textBaseline = 'middle'; ctx2.textAlign = 'center';
+      ctx2.fillText(String(cell), x + w/2, y + h/2);
+      ctx2.textAlign = 'left';
+
+      ctx2.strokeStyle = '#1e2535'; ctx2.lineWidth = 1;
+      ctx2.strokeRect(x + 0.5, y + 0.5, w, h);
+    });
+  });
+
+  ctx2.fillStyle = '#64748b'; ctx2.font = '12px monospace';
+  ctx2.fillText('绿色 = 合并单元格（colspan/rowspan）', 10, H - 12);
+}
+drawMerged();
+
+window.addEventListener('tabchange', () => { render0(); render1(); drawMerged(); });
+</script>
+</body>
+</html>

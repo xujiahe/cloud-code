@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="_common.css">
+  <style>
+    .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: middle; margin-right: 4px; }
+  </style>
+</head>
+<body>
+<div id="tab-bar"></div>
+
+<!-- Panel 0: 路径绘制 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c0" width="480" height="320"></canvas>
+    <div class="controls">
+      <button onclick="drawPaths()">重新绘制</button>
+      <button id="btn-animate" onclick="toggleAnim()">▶ 动画</button>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>路径绘制核心 API</h3>
+    <p><code>beginPath()</code> 每次绘制新图形前必须调用，否则路径会叠加。</p>
+    <p><code>moveTo / lineTo</code> 移动画笔 / 画直线。</p>
+    <p><code>arc(x,y,r,start,end)</code> 绘制圆弧，角度为弧度制。</p>
+    <p><code>closePath()</code> 连回路径起点，形成封闭图形。</p>
+    <p>扇形 = <code>moveTo</code> 圆心 + <code>arc</code> + <code>closePath</code>。</p>
+  </div>
+</div>
+
+<!-- Panel 1: 贝塞尔曲线 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c1" width="480" height="320"></canvas>
+    <div class="controls">
+      <label>波形数 <input type="range" id="waves" min="1" max="8" value="3" oninput="drawBezier()"></label>
+      <label>振幅 <input type="range" id="amp" min="20" max="120" value="60" oninput="drawBezier()"></label>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>贝塞尔曲线</h3>
+    <p><code>quadraticCurveTo(cpx,cpy,x,y)</code> 二次贝塞尔，1 个控制点。</p>
+    <p><code>bezierCurveTo(cp1x,cp1y,cp2x,cp2y,x,y)</code> 三次贝塞尔，2 个控制点。</p>
+    <p>拖动滑块改变波形数量和振幅，观察控制点对曲线的影响。</p>
+  </div>
+</div>
+
+<!-- Panel 2: 渐变与阴影 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c2" width="480" height="320"></canvas>
+    <div class="controls">
+      <button onclick="drawGradients('linear')">线性渐变</button>
+      <button onclick="drawGradients('radial')">径向渐变</button>
+      <button onclick="drawGradients('shadow')">阴影效果</button>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>渐变与阴影</h3>
+    <p><code>createLinearGradient(x0,y0,x1,y1)</code> 线性渐变，坐标为画布绝对坐标。</p>
+    <p><code>createRadialGradient(x0,y0,r0,x1,y1,r1)</code> 径向渐变，两圆圆心偏移可模拟光照。</p>
+    <p><code>shadowColor / shadowBlur / shadowOffsetX/Y</code> 阴影属性，绘制完后记得重置为 transparent，避免影响后续绘制性能。</p>
+  </div>
+</div>
+
+<!-- Panel 3: lineCap / lineJoin -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c3" width="480" height="320"></canvas>
+    <div class="controls">
+      <label>lineWidth <input type="range" id="lw" min="4" max="40" value="16" oninput="drawStyles()"></label>
+      <button onclick="toggleDash()">切换虚线</button>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>线条样式</h3>
+    <p><code>lineCap</code>：<code>butt</code>（平直）/ <code>round</code>（圆头）/ <code>square</code>（方头）</p>
+    <p><code>lineJoin</code>：<code>miter</code>（尖角）/ <code>round</code>（圆角）/ <code>bevel</code>（斜切）</p>
+    <p><code>setLineDash([实线,间隔])</code> 绘制虚线，<code>lineDashOffset</code> 可做蚂蚁线动画。</p>
+  </div>
+</div>
+
+<script src="_layout.js"></script>
+<script>
+initLayout('Canvas 基础', ['路径绘制', '贝塞尔曲线', '渐变与阴影', '线条样式']);
+
+// ── Panel 0: 路径绘制 ──
+const c0 = document.getElementById('c0');
+const ctx0 = c0.getContext('2d');
+let animId = null, angle = 0;
+
+function drawPaths() {
+  const w = c0.width, h = c0.height;
+  ctx0.clearRect(0, 0, w, h);
+  ctx0.fillStyle = '#0f1117';
+  ctx0.fillRect(0, 0, w, h);
+
+  // 直线三角形
+  ctx0.beginPath();
+  ctx0.moveTo(60, 260); ctx0.lineTo(140, 100); ctx0.lineTo(220, 260);
+  ctx0.closePath();
+  ctx0.fillStyle = 'rgba(59,130,246,0.3)';
+  ctx0.strokeStyle = '#3b82f6'; ctx0.lineWidth = 2;
+  ctx0.fill(); ctx0.stroke();
+
+  // 完整圆
+  ctx0.beginPath();
+  ctx0.arc(310, 180, 60, 0, Math.PI * 2);
+  ctx0.fillStyle = 'rgba(16,185,129,0.3)';
+  ctx0.strokeStyle = '#10b981'; ctx0.lineWidth = 2;
+  ctx0.fill(); ctx0.stroke();
+
+  // 扇形（饼图片段）
+  const cx = 420, cy = 180;
+  [
+    [0, Math.PI * 0.6, '#f59e0b'],
+    [Math.PI * 0.6, Math.PI * 1.3, '#ef4444'],
+    [Math.PI * 1.3, Math.PI * 2, '#8b5cf6'],
+  ].forEach(([s, e, color]) => {
+    ctx0.beginPath();
+    ctx0.moveTo(cx, cy);
+    ctx0.arc(cx, cy, 55, s, e);
+    ctx0.closePath();
+    ctx0.fillStyle = color + '99';
+    ctx0.strokeStyle = color; ctx0.lineWidth = 1.5;
+    ctx0.fill(); ctx0.stroke();
+  });
+
+  // 标注
+  ctx0.fillStyle = '#64748b'; ctx0.font = '12px monospace';
+  ctx0.fillText('closePath 三角形', 30, 290);
+  ctx0.fillText('arc 完整圆', 265, 260);
+  ctx0.fillText('扇形 (饼图)', 375, 260);
+}
+
+function toggleAnim() {
+  const btn = document.getElementById('btn-animate');
+  if (animId) { cancelAnimationFrame(animId); animId = null; btn.textContent = '▶ 动画'; return; }
+  btn.textContent = '⏹ 停止';
+  const animate = () => {
+    angle += 0.02;
+    const w = c0.width, h = c0.height;
+    ctx0.clearRect(0, 0, w, h);
+    ctx0.fillStyle = '#0f1117'; ctx0.fillRect(0, 0, w, h);
+    // 旋转扇形
+    const cx = 240, cy = 160, r = 80;
+    const slices = 5;
+    for (let i = 0; i < slices; i++) {
+      const s = angle + (i / slices) * Math.PI * 2;
+      const e = s + (Math.PI * 2) / slices - 0.05;
+      ctx0.beginPath();
+      ctx0.moveTo(cx, cy);
+      ctx0.arc(cx, cy, r, s, e);
+      ctx0.closePath();
+      ctx0.fillStyle = `hsl(${(i / slices) * 360}, 70%, 55%)`;
+      ctx0.fill();
+    }
+    animId = requestAnimationFrame(animate);
+  };
+  animate();
+}
+drawPaths();
+
+// ── Panel 1: 贝塞尔曲线 ──
+const c1 = document.getElementById('c1');
+const ctx1 = c1.getContext('2d');
+
+function drawBezier() {
+  const w = c1.width, h = c1.height;
+  const waves = +document.getElementById('waves').value;
+  const amp = +document.getElementById('amp').value;
+  ctx1.clearRect(0, 0, w, h);
+  ctx1.fillStyle = '#0f1117'; ctx1.fillRect(0, 0, w, h);
+
+  const segW = w / waves;
+  const midY = h / 2;
+
+  // 二次贝塞尔波浪（蓝色）
+  ctx1.beginPath();
+  ctx1.moveTo(0, midY);
+  for (let i = 0; i < waves; i++) {
+    const cpX = (i + 0.5) * segW;
+    const cpY = i % 2 === 0 ? midY - amp : midY + amp;
+    ctx1.quadraticCurveTo(cpX, cpY, (i + 1) * segW, midY);
+    // 绘制控制点
+    ctx1.save();
+    ctx1.beginPath();
+    ctx1.arc(cpX, cpY, 4, 0, Math.PI * 2);
+    ctx1.fillStyle = '#f59e0b';
+    ctx1.fill();
+    // 控制点连线
+    ctx1.beginPath();
+    ctx1.setLineDash([3, 3]);
+    ctx1.strokeStyle = '#f59e0b44';
+    ctx1.lineWidth = 1;
+    ctx1.moveTo(i * segW, midY);
+    ctx1.lineTo(cpX, cpY);
+    ctx1.lineTo((i + 1) * segW, midY);
+    ctx1.stroke();
+    ctx1.setLineDash([]);
+    ctx1.restore();
+  }
+  ctx1.strokeStyle = '#3b82f6'; ctx1.lineWidth = 2.5;
+  ctx1.stroke();
+
+  // 三次贝塞尔 S 曲线（绿色）
+  ctx1.beginPath();
+  ctx1.moveTo(40, midY + amp * 0.8);
+  ctx1.bezierCurveTo(w * 0.25, midY - amp * 1.2, w * 0.75, midY + amp * 1.2, w - 40, midY - amp * 0.8);
+  ctx1.strokeStyle = '#10b981'; ctx1.lineWidth = 2.5;
+  ctx1.stroke();
+
+  // 图例
+  ctx1.font = '12px monospace';
+  ctx1.fillStyle = '#3b82f6'; ctx1.fillText('quadraticCurveTo (二次)', 10, 20);
+  ctx1.fillStyle = '#10b981'; ctx1.fillText('bezierCurveTo (三次 S 曲线)', 10, 38);
+  ctx1.fillStyle = '#f59e0b'; ctx1.fillText('● 控制点', 10, 56);
+}
+drawBezier();
+
+// ── Panel 2: 渐变与阴影 ──
+const c2 = document.getElementById('c2');
+const ctx2 = c2.getContext('2d');
+
+function drawGradients(type) {
+  const w = c2.width, h = c2.height;
+  ctx2.clearRect(0, 0, w, h);
+  ctx2.fillStyle = '#0f1117'; ctx2.fillRect(0, 0, w, h);
+
+  if (type === 'linear') {
+    const stops = [['#3b82f6','#8b5cf6','#ec4899'], ['#10b981','#f59e0b','#ef4444'], ['#fff','#64748b','#0f1117']];
+    stops.forEach(([c1, c2, c3], i) => {
+      const g = ctx2.createLinearGradient(20, 0, w - 20, 0);
+      g.addColorStop(0, c1); g.addColorStop(0.5, c2); g.addColorStop(1, c3);
+      ctx2.fillStyle = g;
+      ctx2.fillRect(20, 30 + i * 90, w - 40, 70);
+    });
+    ctx2.fillStyle = '#64748b'; ctx2.font = '12px monospace';
+    ctx2.fillText('createLinearGradient — 水平方向', 20, 22);
+  } else if (type === 'radial') {
+    // 模拟球体光照
+    const balls = [{cx:120,cy:160,r:80,h:'#60a5fa'},{cx:280,cy:160,r:80,h:'#34d399'},{cx:420,cy:160,r:70,h:'#f87171'}];
+    balls.forEach(({cx,cy,r,h}) => {
+      const g = ctx2.createRadialGradient(cx-r*0.3, cy-r*0.3, r*0.05, cx, cy, r);
+      g.addColorStop(0, '#ffffff'); g.addColorStop(0.3, h); g.addColorStop(1, '#0f1117');
+      ctx2.beginPath(); ctx2.arc(cx, cy, r, 0, Math.PI*2);
+      ctx2.fillStyle = g; ctx2.fill();
+    });
+    ctx2.fillStyle = '#64748b'; ctx2.font = '12px monospace';
+    ctx2.fillText('createRadialGradient — 模拟球体光照', 20, 22);
+  } else {
+    const shapes = [{x:60,y:80,w:120,h:80,blur:20,ox:8,oy:8,c:'rgba(59,130,246,0.6)'},{x:230,y:80,w:120,h:80,blur:30,ox:0,oy:0,c:'rgba(139,92,246,0.8)'},{x:390,y:60,r:60,blur:15,ox:5,oy:10,c:'rgba(16,185,129,0.7)'}];
+    shapes.forEach(s => {
+      ctx2.shadowColor = s.c; ctx2.shadowBlur = s.blur;
+      ctx2.shadowOffsetX = s.ox; ctx2.shadowOffsetY = s.oy;
+      ctx2.fillStyle = '#1e2535';
+      if (s.r) { ctx2.beginPath(); ctx2.arc(s.x, s.y, s.r, 0, Math.PI*2); ctx2.fill(); }
+      else ctx2.fillRect(s.x, s.y, s.w, s.h);
+    });
+    ctx2.shadowColor = 'transparent'; ctx2.shadowBlur = 0; ctx2.shadowOffsetX = 0; ctx2.shadowOffsetY = 0;
+    ctx2.fillStyle = '#64748b'; ctx2.font = '12px monospace';
+    ctx2.fillText('shadowColor / shadowBlur / shadowOffset', 20, 22);
+  }
+}
+drawGradients('linear');
+
+// ── Panel 3: 线条样式 ──
+const c3 = document.getElementById('c3');
+const ctx3 = c3.getContext('2d');
+let dashOn = false, dashAnimId = null, dashOffset = 0;
+
+function drawStyles() {
+  const lw = +document.getElementById('lw').value;
+  const w = c3.width, h = c3.height;
+  ctx3.clearRect(0, 0, w, h);
+  ctx3.fillStyle = '#0f1117'; ctx3.fillRect(0, 0, w, h);
+
+  const caps = ['butt', 'round', 'square'];
+  const joins = ['miter', 'round', 'bevel'];
+  const colors = ['#3b82f6', '#10b981', '#f59e0b'];
+
+  caps.forEach((cap, i) => {
+    ctx3.beginPath();
+    ctx3.lineWidth = lw; ctx3.lineCap = cap; ctx3.strokeStyle = colors[i];
+    ctx3.moveTo(40, 50 + i * 60); ctx3.lineTo(200, 50 + i * 60);
+    ctx3.stroke();
+    ctx3.fillStyle = colors[i]; ctx3.font = '12px monospace';
+    ctx3.fillText(`lineCap: "${cap}"`, 215, 55 + i * 60);
+  });
+
+  joins.forEach((join, i) => {
+    ctx3.beginPath();
+    ctx3.lineWidth = lw * 0.7; ctx3.lineJoin = join; ctx3.strokeStyle = colors[i];
+    ctx3.moveTo(310, 80 + i * 70); ctx3.lineTo(360, 30 + i * 70); ctx3.lineTo(410, 80 + i * 70);
+    ctx3.stroke();
+    ctx3.fillStyle = colors[i]; ctx3.font = '12px monospace';
+    ctx3.fillText(`lineJoin: "${join}"`, 420, 60 + i * 70);
+  });
+
+  // 虚线
+  if (!dashOn) {
+    ctx3.beginPath();
+    ctx3.setLineDash([12, 6]); ctx3.lineDashOffset = 0;
+    ctx3.strokeStyle = '#8b5cf6'; ctx3.lineWidth = 3;
+    ctx3.moveTo(40, 270); ctx3.lineTo(460, 270);
+    ctx3.stroke(); ctx3.setLineDash([]);
+    ctx3.fillStyle = '#8b5cf6'; ctx3.font = '12px monospace';
+    ctx3.fillText('setLineDash([12, 6])', 40, 290);
+  }
+}
+
+function toggleDash() {
+  dashOn = !dashOn;
+  if (dashOn) {
+    const animate = () => {
+      drawStyles();
+      ctx3.beginPath();
+      ctx3.setLineDash([12, 6]);
+      ctx3.lineDashOffset = -dashOffset;
+      ctx3.strokeStyle = '#8b5cf6'; ctx3.lineWidth = 3;
+      ctx3.moveTo(40, 270); ctx3.lineTo(460, 270);
+      ctx3.stroke(); ctx3.setLineDash([]);
+      ctx3.fillStyle = '#8b5cf6'; ctx3.font = '12px monospace';
+      ctx3.fillText('蚂蚁线动画 (lineDashOffset)', 40, 290);
+      dashOffset = (dashOffset + 0.5) % 18;
+      dashAnimId = requestAnimationFrame(animate);
+    };
+    animate();
+  } else {
+    cancelAnimationFrame(dashAnimId);
+    drawStyles();
+  }
+}
+drawStyles();
+
+window.addEventListener('tabchange', () => { drawPaths(); drawBezier(); drawGradients('linear'); drawStyles(); });
+</script>
+</body>
+</html>

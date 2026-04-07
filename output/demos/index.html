@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Canvas 面试题图谱 — 示例工程</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; }
+    header { padding: 32px 40px 24px; border-bottom: 1px solid #1e2535; }
+    header h1 { font-size: 24px; font-weight: 700; color: #fff; }
+    header p { margin-top: 6px; color: #64748b; font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; padding: 32px 40px; }
+    .card { background: #161b27; border: 1px solid #1e2535; border-radius: 12px; padding: 24px; cursor: pointer; transition: border-color .2s, transform .2s; text-decoration: none; color: inherit; display: block; }
+    .card:hover { border-color: #3b82f6; transform: translateY(-2px); }
+    .card-icon { font-size: 32px; margin-bottom: 12px; }
+    .card-title { font-size: 16px; font-weight: 600; color: #f1f5f9; margin-bottom: 6px; }
+    .card-desc { font-size: 13px; color: #64748b; line-height: 1.6; }
+    .badge { display: inline-block; margin-top: 12px; padding: 2px 8px; border-radius: 4px; font-size: 11px; background: #1e3a5f; color: #60a5fa; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎨 Canvas 面试题图谱 — 交互示例</h1>
+    <p>点击卡片查看对应知识点的可运行示例</p>
+  </header>
+  <div class="grid">
+    <a class="card" href="01-basics.html">
+      <div class="card-icon">✏️</div>
+      <div class="card-title">Canvas 基础</div>
+      <div class="card-desc">路径绘制、贝塞尔曲线、渐变、阴影、lineCap/lineJoin 样式演示</div>
+      <span class="badge">⭐ 初级 ~ ⭐⭐ 中级</span>
+    </a>
+    <a class="card" href="02-advanced.html">
+      <div class="card-icon">🔬</div>
+      <div class="card-title">Canvas 进阶</div>
+      <div class="card-desc">变换矩阵、像素滤镜、save/restore、clip 裁剪、OffscreenCanvas</div>
+      <span class="badge">⭐⭐ 中级 ~ ⭐⭐⭐ 高级</span>
+    </a>
+    <a class="card" href="03-table.html">
+      <div class="card-icon">📊</div>
+      <div class="card-title">表格绘制专题</div>
+      <div class="card-desc">虚拟滚动 10 万行、冻结列、单元格合并、文字溢出省略</div>
+      <span class="badge">⭐⭐ 中级 ~ ⭐⭐⭐ 高级</span>
+    </a>
+    <a class="card" href="04-performance.html">
+      <div class="card-icon">⚡</div>
+      <div class="card-title">性能优化专题</div>
+      <div class="card-desc">分层渲染对比、脏矩形局部重绘、帧率节流、DPR 高清适配</div>
+      <span class="badge">⭐⭐⭐ 高级</span>
+    </a>
+    <a class="card" href="05-practical.html">
+      <div class="card-icon">🛠️</div>
+      <div class="card-title">实战应用专题</div>
+      <div class="card-desc">拖拽调整列宽、颜色拾取命中检测、低代码拖拽画布、图片导出</div>
+      <span class="badge">⭐⭐⭐ 高级</span>
+    </a>
+    <a class="card" href="06-video-sei.html">
+      <div class="card-icon">📹</div>
+      <div class="card-title">Video + Canvas SEI 叠加</div>
+      <div class="card-desc">H.264 SEI 数据提取、requestVideoFrameCallback 帧级对齐、目标检测框/轨迹/热力图实时叠加、SEI 丢失容错、帧对齐时间线可视化</div>
+      <span class="badge">⭐⭐⭐ 高级</span>
+    </a>
+  </div>
+</body>
+</html>

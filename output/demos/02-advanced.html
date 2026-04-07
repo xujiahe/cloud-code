@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="_common.css">
+</head>
+<body>
+<div id="tab-bar"></div>
+
+<!-- Panel 0: 变换矩阵 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c0" width="480" height="320"></canvas>
+    <div class="controls">
+      <label>旋转 <input type="range" id="rot" min="0" max="360" value="0" oninput="drawTransform()"></label>
+      <label>缩放 <input type="range" id="sc" min="50" max="200" value="100" oninput="drawTransform()"></label>
+      <button onclick="resetTransform()">重置</button>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>变换矩阵</h3>
+    <p>Canvas 变换作用于<strong>坐标系</strong>，而非图形本身。</p>
+    <p><code>translate(x,y)</code> 平移原点</p>
+    <p><code>rotate(angle)</code> 绕当前原点旋转（弧度）</p>
+    <p><code>scale(sx,sy)</code> 缩放坐标系</p>
+    <p>绕任意点旋转：先 translate 到旋转中心，rotate，再 translate 回来。</p>
+    <p><code>save()/restore()</code> 隔离变换作用域。</p>
+  </div>
+</div>
+
+<!-- Panel 1: 像素滤镜 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c1" width="480" height="320"></canvas>
+    <div class="controls">
+      <button onclick="applyFilter('none')">原图</button>
+      <button onclick="applyFilter('gray')">灰度</button>
+      <button onclick="applyFilter('invert')">反色</button>
+      <button onclick="applyFilter('bright')">提亮</button>
+      <button onclick="applyFilter('blur')">模糊</button>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>像素操作</h3>
+    <p><code>getImageData(x,y,w,h)</code> 返回 <code>ImageData</code>，<code>.data</code> 是 RGBA 字节数组。</p>
+    <p>像素索引：<code>idx = (y * width + x) * 4</code></p>
+    <p>灰度公式：<code>0.299R + 0.587G + 0.114B</code>（人眼感知权重）</p>
+    <p>频繁读取时设置 <code>willReadFrequently: true</code> 优化性能。</p>
+  </div>
+</div>
+
+<!-- Panel 2: save/restore + clip -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c2" width="480" height="320"></canvas>
+    <div class="controls">
+      <button onclick="drawClip('circle')">圆形裁剪</button>
+      <button onclick="drawClip('star')">星形裁剪</button>
+      <button onclick="drawClip('donut')">圆环裁剪</button>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>save / restore / clip</h3>
+    <p><code>save()</code> 将当前状态（样式 + 变换矩阵 + 裁剪区域）压栈。</p>
+    <p><code>restore()</code> 弹出栈顶状态，<strong>唯一</strong>重置裁剪区域的方式。</p>
+    <p><code>clip()</code> 多次调用取<strong>交集</strong>，裁剪区域只会越来越小。</p>
+    <p><code>clip('evenodd')</code> 奇偶规则，可实现镂空效果。</p>
+  </div>
+</div>
+
+<script src="_layout.js"></script>
+<script>
+initLayout('Canvas 进阶', ['变换矩阵', '像素滤镜', 'save/restore/clip']);
+
+// ── Panel 0: 变换矩阵 ──
+const c0 = document.getElementById('c0');
+const ctx0 = c0.getContext('2d');
+
+function drawTransform() {
+  const deg = +document.getElementById('rot').value;
+  const scale = +document.getElementById('sc').value / 100;
+  const w = c0.width, h = c0.height;
+  ctx0.clearRect(0, 0, w, h);
+  ctx0.fillStyle = '#0f1117'; ctx0.fillRect(0, 0, w, h);
+
+  // 坐标轴参考线
+  ctx0.save();
+  ctx0.strokeStyle = '#1e2535'; ctx0.lineWidth = 1;
+  ctx0.beginPath(); ctx0.moveTo(w/2, 0); ctx0.lineTo(w/2, h); ctx0.stroke();
+  ctx0.beginPath(); ctx0.moveTo(0, h/2); ctx0.lineTo(w, h/2); ctx0.stroke();
+  ctx0.restore();
+
+  const angle = deg * Math.PI / 180;
+
+  // 原始位置（半透明）
+  ctx0.save();
+  ctx0.translate(w/2, h/2);
+  ctx0.fillStyle = 'rgba(59,130,246,0.15)';
+  ctx0.strokeStyle = 'rgba(59,130,246,0.3)'; ctx0.lineWidth = 1;
+  ctx0.strokeRect(-60, -40, 120, 80);
+  ctx0.restore();
+
+  // 变换后
+  ctx0.save();
+  ctx0.translate(w/2, h/2);   // 移动到画布中心
+  ctx0.rotate(angle);           // 旋转
+  ctx0.scale(scale, scale);     // 缩放
+
+  // 绘制矩形（以新原点为中心）
+  ctx0.fillStyle = 'rgba(59,130,246,0.4)';
+  ctx0.strokeStyle = '#3b82f6'; ctx0.lineWidth = 2;
+  ctx0.fillRect(-60, -40, 120, 80);
+  ctx0.strokeRect(-60, -40, 120, 80);
+
+  // 绘制坐标轴箭头（变换后的坐标系）
+  ctx0.strokeStyle = '#ef4444'; ctx0.lineWidth = 2;
+  ctx0.beginPath(); ctx0.moveTo(0,0); ctx0.lineTo(70,0); ctx0.stroke();
+  ctx0.strokeStyle = '#10b981';
+  ctx0.beginPath(); ctx0.moveTo(0,0); ctx0.lineTo(0,70); ctx0.stroke();
+  ctx0.restore();
+
+  // 标注
+  ctx0.fillStyle = '#64748b'; ctx0.font = '12px monospace';
+  ctx0.fillText(`rotate: ${deg}°  scale: ${scale.toFixed(2)}`, 10, 20);
+  ctx0.fillStyle = '#ef4444'; ctx0.fillText('X轴', w/2 + 75, h/2 + 4);
+  ctx0.fillStyle = '#10b981'; ctx0.fillText('Y轴', w/2 + 4, h/2 + 85);
+}
+
+function resetTransform() {
+  document.getElementById('rot').value = 0;
+  document.getElementById('sc').value = 100;
+  drawTransform();
+}
+drawTransform();
+
+// ── Panel 1: 像素滤镜 ──
+const c1 = document.getElementById('c1');
+const ctx1 = c1.getContext('2d', { willReadFrequently: true });
+let originalImageData = null;
+
+// 生成测试图像（彩色渐变 + 几何图形）
+function generateTestImage() {
+  const w = c1.width, h = c1.height;
+  ctx1.clearRect(0, 0, w, h);
+  // 彩色渐变背景
+  const g = ctx1.createLinearGradient(0, 0, w, h);
+  g.addColorStop(0, '#1e3a5f'); g.addColorStop(0.5, '#3b1f5e'); g.addColorStop(1, '#1f3d2e');
+  ctx1.fillStyle = g; ctx1.fillRect(0, 0, w, h);
+  // 彩色圆形
+  [[120,100,60,'#3b82f6'],[240,160,80,'#10b981'],[360,100,50,'#f59e0b'],[180,240,70,'#ef4444'],[340,240,55,'#8b5cf6']].forEach(([x,y,r,c]) => {
+    ctx1.beginPath(); ctx1.arc(x, y, r, 0, Math.PI*2);
+    ctx1.fillStyle = c + 'cc'; ctx1.fill();
+  });
+  originalImageData = ctx1.getImageData(0, 0, w, h);
+}
+
+function applyFilter(type) {
+  if (!originalImageData) generateTestImage();
+  const w = c1.width, h = c1.height;
+  const src = new ImageData(new Uint8ClampedArray(originalImageData.data), w, h);
+  const d = src.data;
+
+  if (type === 'gray') {
+    for (let i = 0; i < d.length; i += 4) {
+      const g = Math.round(0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]);
+      d[i] = d[i+1] = d[i+2] = g;
+    }
+  } else if (type === 'invert') {
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] = 255-d[i]; d[i+1] = 255-d[i+1]; d[i+2] = 255-d[i+2];
+    }
+  } else if (type === 'bright') {
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] += 60; d[i+1] += 60; d[i+2] += 60;
+    }
+  } else if (type === 'blur') {
+    const out = new Uint8ClampedArray(d);
+    for (let y = 1; y < h-1; y++) for (let x = 1; x < w-1; x++) for (let c = 0; c < 3; c++) {
+      let s = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) s += d[((y+dy)*w+(x+dx))*4+c];
+      out[(y*w+x)*4+c] = Math.round(s/9);
+    }
+    src.data.set(out);
+  }
+  ctx1.putImageData(src, 0, 0);
+  // 标注
+  ctx1.fillStyle = 'rgba(0,0,0,0.5)'; ctx1.fillRect(0, 0, w, 24);
+  ctx1.fillStyle = '#94a3b8'; ctx1.font = '12px monospace';
+  ctx1.fillText(`滤镜: ${type === 'none' ? '原图' : type}`, 10, 16);
+}
+generateTestImage();
+
+// ── Panel 2: save/restore + clip ──
+const c2 = document.getElementById('c2');
+const ctx2 = c2.getContext('2d');
+
+function drawClip(type) {
+  const w = c2.width, h = c2.height;
+  ctx2.clearRect(0, 0, w, h);
+  ctx2.fillStyle = '#0f1117'; ctx2.fillRect(0, 0, w, h);
+
+  // 背景彩色渐变（用于展示裁剪效果）
+  const drawBg = () => {
+    for (let i = 0; i < 8; i++) {
+      ctx2.fillStyle = `hsl(${i*45},70%,45%)`;
+      ctx2.fillRect(i * (w/8), 0, w/8, h);
+    }
+    // 白色网格
+    ctx2.strokeStyle = 'rgba(255,255,255,0.1)'; ctx2.lineWidth = 1;
+    for (let x = 0; x < w; x += 40) { ctx2.beginPath(); ctx2.moveTo(x,0); ctx2.lineTo(x,h); ctx2.stroke(); }
+    for (let y = 0; y < h; y += 40) { ctx2.beginPath(); ctx2.moveTo(0,y); ctx2.lineTo(w,y); ctx2.stroke(); }
+  };
+
+  const cx = w/2, cy = h/2;
+
+  if (type === 'circle') {
+    ctx2.save();
+    ctx2.beginPath(); ctx2.arc(cx, cy, 120, 0, Math.PI*2); ctx2.clip();
+    drawBg();
+    ctx2.restore();
+    // 边框
+    ctx2.beginPath(); ctx2.arc(cx, cy, 120, 0, Math.PI*2);
+    ctx2.strokeStyle = '#fff'; ctx2.lineWidth = 3; ctx2.stroke();
+    ctx2.fillStyle = '#64748b'; ctx2.font = '13px monospace';
+    ctx2.fillText('arc + clip() — 圆形裁剪', 10, 20);
+
+  } else if (type === 'star') {
+    ctx2.save();
+    ctx2.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const outerA = (i * 4 * Math.PI / 5) - Math.PI/2;
+      const innerA = outerA + Math.PI/5;
+      i === 0 ? ctx2.moveTo(cx + Math.cos(outerA)*120, cy + Math.sin(outerA)*120)
+              : ctx2.lineTo(cx + Math.cos(outerA)*120, cy + Math.sin(outerA)*120);
+      ctx2.lineTo(cx + Math.cos(innerA)*50, cy + Math.sin(innerA)*50);
+    }
+    ctx2.closePath(); ctx2.clip();
+    drawBg();
+    ctx2.restore();
+    ctx2.fillStyle = '#64748b'; ctx2.font = '13px monospace';
+    ctx2.fillText('五角星路径 + clip()', 10, 20);
+
+  } else {
+    ctx2.save();
+    ctx2.beginPath();
+    ctx2.arc(cx, cy, 130, 0, Math.PI*2, false); // 外圆顺时针
+    ctx2.arc(cx, cy, 60, 0, Math.PI*2, true);   // 内圆逆时针
+    ctx2.clip('evenodd'); // evenodd 规则镂空
+    drawBg();
+    ctx2.restore();
+    ctx2.fillStyle = '#64748b'; ctx2.font = '13px monospace';
+    ctx2.fillText('clip("evenodd") — 圆环镂空', 10, 20);
+  }
+}
+drawClip('circle');
+
+window.addEventListener('tabchange', () => { drawTransform(); generateTestImage(); drawClip('circle'); });
+</script>
+</body>
+</html>

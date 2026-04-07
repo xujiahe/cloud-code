@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="_common.css">
+</head>
+<body>
+<div id="tab-bar"></div>
+
+<!-- Panel 0: 拖拽调整列宽 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c0" width="480" height="300"></canvas>
+    <div class="controls">
+      <span class="stat" id="stat0">将鼠标移到列分隔线上，出现 ↔ 后拖拽调整列宽</span>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>拖拽调整列宽</h3>
+    <p>命中检测：鼠标 X 与列右边界距离 ≤ 4px 时触发。</p>
+    <p>拖拽状态机：<code>isDragging</code> + <code>dragStartX</code> + <code>dragStartWidth</code></p>
+    <p>实时更新：<code>mousemove</code> 时更新 <code>colWidths[col]</code> 并重绘。</p>
+    <p>最小列宽限制：<code>Math.max(MIN_WIDTH, newWidth)</code></p>
+    <p><code>mouseup</code> 在 <code>document</code> 上监听，防止鼠标移出 Canvas 后松开失效。</p>
+  </div>
+</div>
+
+<!-- Panel 1: 颜色拾取命中检测 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c1" width="480" height="300"></canvas>
+    <div class="controls">
+      <span class="stat" id="stat1">移动鼠标悬停图形，点击查看命中结果</span>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>颜色拾取命中检测</h3>
+    <p>为每个图形分配唯一颜色 ID，在<strong>离屏 Canvas</strong> 上用该颜色绘制。</p>
+    <p>命中检测：读取鼠标位置像素颜色 → 反查图形 ID。</p>
+    <p>优点：支持任意复杂形状，性能稳定 O(1)。</p>
+    <p>这是 ECharts（ZRender）的实际实现方案。</p>
+    <p>注意：离屏 Canvas 绘制时强制 <code>globalAlpha = 1</code>，避免颜色混合导致 ID 失真。</p>
+  </div>
+</div>
+
+<!-- Panel 2: 低代码拖拽画布 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c2" width="480" height="300"></canvas>
+    <div class="controls">
+      <button onclick="addShape('rect')">+ 矩形</button>
+      <button onclick="addShape('circle')">+ 圆形</button>
+      <button onclick="addShape('text')">+ 文字</button>
+      <button onclick="undoAction()">↩ 撤销</button>
+      <button onclick="clearAll()">清空</button>
+      <span class="stat" id="stat2">点击选中，拖拽移动，支持撤销</span>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>低代码拖拽画布</h3>
+    <p>每个元素是一个数据对象（位置、尺寸、类型）。</p>
+    <p>选中后显示 8 个控制手柄（蓝色小方块）。</p>
+    <p>撤销/重做：命令模式（Command Pattern）+ 历史栈。</p>
+    <p>每次移动操作记录 <code>{fromX, fromY, toX, toY}</code>，<code>undo()</code> 时还原。</p>
+    <p>快捷键：<code>Ctrl+Z</code> 撤销，<code>Delete</code> 删除选中。</p>
+  </div>
+</div>
+
+<script src="_layout.js"></script>
+<script>
+initLayout('实战应用专题', ['拖拽调整列宽', '颜色拾取命中检测', '低代码拖拽画布']);
+
+// ══════════════════════════════════════════
+// Panel 0: 拖拽调整列宽
+// ══════════════════════════════════════════
+const c0 = document.getElementById('c0');
+const ctx0 = c0.getContext('2d');
+const ROWS0 = [['产品名称','销售额(万)','增长率','负责人','状态'],['智能手表','128.5','+23.4%','张三','进行中'],['无线耳机','96.2','+15.7%','李四','已完成'],['平板电脑','215.8','+8.2%','王五','进行中'],['智能音箱','67.3','-3.1%','赵六','暂停'],['笔记本电脑','342.1','+31.5%','钱七','进行中'],['智能手环','45.6','+12.8%','孙八','已完成']];
+let colWidths0 = [160, 110, 90, 90, 90];
+const ROW_H0 = 36;
+const MIN_W = 50;
+let isDragging0 = false, draggingCol0 = -1, dragStartX0 = 0, dragStartW0 = 0, hoverCol0 = -1;
+
+function getColOffsets0() {
+  return colWidths0.reduce((a,w,i) => { a.push(i===0?0:a[i-1]+colWidths0[i-1]); return a; }, []);
+}
+
+function hitDivider(mx) {
+  const edges = getColOffsets0().map((o,i) => o + colWidths0[i]);
+  for (let i = 0; i < edges.length - 1; i++) if (Math.abs(mx - edges[i]) <= 5) return i;
+  return -1;
+}
+
+function render0() {
+  const W = c0.width, H = c0.height;
+  const offsets = getColOffsets0();
+  ctx0.clearRect(0, 0, W, H);
+  ctx0.fillStyle = '#0f1117'; ctx0.fillRect(0, 0, W, H);
+
+  ROWS0.forEach((row, ri) => {
+    const y = ri * ROW_H0;
+    row.forEach((cell, ci) => {
+      const x = offsets[ci], cw = colWidths0[ci];
+      const isHeader = ri === 0;
+      ctx0.fillStyle = isHeader ? '#1e2535' : ri % 2 === 0 ? '#0f1117' : '#111827';
+      ctx0.fillRect(x, y, cw, ROW_H0);
+      ctx0.fillStyle = isHeader ? '#94a3b8' : '#e2e8f0';
+      ctx0.font = `${isHeader ? '600 ' : ''}13px sans-serif`;
+      ctx0.textBaseline = 'middle';
+      let t = cell;
+      const maxW = cw - 16;
+      if (ctx0.measureText(t).width > maxW) { while (ctx0.measureText(t+'…').width > maxW && t.length) t = t.slice(0,-1); t += '…'; }
+      ctx0.fillText(t, x + 8, y + ROW_H0/2);
+      ctx0.strokeStyle = '#1e2535'; ctx0.lineWidth = 1;
+      ctx0.strokeRect(x + 0.5, y + 0.5, cw, ROW_H0);
+    });
+  });
+
+  // 高亮拖拽/悬停分隔线
+  const col = isDragging0 ? draggingCol0 : hoverCol0;
+  if (col >= 0) {
+    const x = getColOffsets0()[col] + colWidths0[col];
+    ctx0.strokeStyle = '#3b82f6'; ctx0.lineWidth = 2;
+    ctx0.beginPath(); ctx0.moveTo(x, 0); ctx0.lineTo(x, ROWS0.length * ROW_H0); ctx0.stroke();
+  }
+
+  document.getElementById('stat0').textContent = `列宽: [${colWidths0.join(', ')}] px`;
+}
+
+c0.addEventListener('mousemove', e => {
+  const rect = c0.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  if (isDragging0) {
+    const delta = mx - dragStartX0;
+    colWidths0[draggingCol0] = Math.max(MIN_W, dragStartW0 + delta);
+    render0();
+  } else {
+    hoverCol0 = hitDivider(mx);
+    c0.style.cursor = hoverCol0 >= 0 ? 'col-resize' : 'default';
+    render0();
+  }
+});
+c0.addEventListener('mousedown', e => {
+  if (hoverCol0 >= 0) {
+    isDragging0 = true; draggingCol0 = hoverCol0;
+    dragStartX0 = e.clientX - c0.getBoundingClientRect().left;
+    dragStartW0 = colWidths0[hoverCol0];
+    e.preventDefault();
+  }
+});
+document.addEventListener('mouseup', () => { isDragging0 = false; });
+render0();
+
+// ══════════════════════════════════════════
+// Panel 1: 颜色拾取命中检测
+// ══════════════════════════════════════════
+const c1 = document.getElementById('c1');
+const ctx1 = c1.getContext('2d');
+const offscreen1 = document.createElement('canvas');
+offscreen1.width = c1.width; offscreen1.height = c1.height;
+const offCtx1 = offscreen1.getContext('2d', { willReadFrequently: true });
+
+const shapes1 = [
+  { id:1, type:'rect',   x:40,  y:60,  w:120, h:80,  color:'#3b82f6', label:'矩形 A' },
+  { id:2, type:'rect',   x:200, y:40,  w:100, h:120, color:'#10b981', label:'矩形 B' },
+  { id:3, type:'circle', x:380, y:100, r:70,          color:'#f59e0b', label:'圆形 C' },
+  { id:4, type:'rect',   x:60,  y:190, w:140, h:70,  color:'#8b5cf6', label:'矩形 D' },
+  { id:5, type:'circle', x:260, y:220, r:55,          color:'#ef4444', label:'圆形 E' },
+  { id:6, type:'rect',   x:360, y:200, w:90,  h:80,  color:'#06b6d4', label:'矩形 F' },
+];
+
+function idToColor(id) { return `rgb(${(id>>16)&255},${(id>>8)&255},${id&255})`; }
+function colorToId(r,g,b) { return (r<<16)|(g<<8)|b; }
+
+function buildOffscreen() {
+  offCtx1.clearRect(0, 0, offscreen1.width, offscreen1.height);
+  shapes1.forEach(s => {
+    offCtx1.fillStyle = idToColor(s.id);
+    if (s.type === 'rect') offCtx1.fillRect(s.x, s.y, s.w, s.h);
+    else { offCtx1.beginPath(); offCtx1.arc(s.x, s.y, s.r, 0, Math.PI*2); offCtx1.fill(); }
+  });
+}
+
+function render1(hoverId = 0) {
+  const W = c1.width, H = c1.height;
+  ctx1.clearRect(0, 0, W, H);
+  ctx1.fillStyle = '#0f1117'; ctx1.fillRect(0, 0, W, H);
+
+  shapes1.forEach(s => {
+    const isHover = s.id === hoverId;
+    ctx1.save();
+    if (isHover) { ctx1.shadowColor = s.color; ctx1.shadowBlur = 20; }
+    ctx1.fillStyle = s.color + (isHover ? 'ff' : '99');
+    if (s.type === 'rect') ctx1.fillRect(s.x, s.y, s.w, s.h);
+    else { ctx1.beginPath(); ctx1.arc(s.x, s.y, s.r, 0, Math.PI*2); ctx1.fill(); }
+    ctx1.restore();
+
+    ctx1.fillStyle = '#fff'; ctx1.font = '12px sans-serif'; ctx1.textBaseline = 'middle'; ctx1.textAlign = 'center';
+    const cx = s.type === 'rect' ? s.x + s.w/2 : s.x;
+    const cy = s.type === 'rect' ? s.y + s.h/2 : s.y;
+    ctx1.fillText(s.label, cx, cy);
+    ctx1.textAlign = 'left';
+  });
+
+  // 显示离屏 Canvas 缩略图
+  ctx1.save();
+  ctx1.globalAlpha = 0.6;
+  ctx1.drawImage(offscreen1, W - 100, H - 70, 90, 60);
+  ctx1.restore();
+  ctx1.strokeStyle = '#334155'; ctx1.lineWidth = 1;
+  ctx1.strokeRect(W - 100, H - 70, 90, 60);
+  ctx1.fillStyle = '#64748b'; ctx1.font = '10px monospace';
+  ctx1.fillText('离屏 Canvas（颜色 ID）', W - 100, H - 76);
+}
+
+buildOffscreen();
+render1();
+
+let lastHover1 = 0;
+c1.addEventListener('mousemove', e => {
+  const rect = c1.getBoundingClientRect();
+  const x = Math.round(e.clientX - rect.left), y = Math.round(e.clientY - rect.top);
+  const px = offCtx1.getImageData(x, y, 1, 1).data;
+  const id = colorToId(px[0], px[1], px[2]);
+  const hit = shapes1.find(s => s.id === id) ?? null;
+  if ((hit?.id ?? 0) !== lastHover1) {
+    lastHover1 = hit?.id ?? 0;
+    c1.style.cursor = hit ? 'pointer' : 'default';
+    render1(lastHover1);
+    document.getElementById('stat1').textContent = hit ? `悬停: ${hit.label}（ID=${hit.id}，颜色=${idToColor(hit.id)}）` : '移动鼠标悬停图形，点击查看命中结果';
+  }
+});
+c1.addEventListener('click', e => {
+  const rect = c1.getBoundingClientRect();
+  const px = offCtx1.getImageData(Math.round(e.clientX-rect.left), Math.round(e.clientY-rect.top), 1, 1).data;
+  const id = colorToId(px[0], px[1], px[2]);
+  const hit = shapes1.find(s => s.id === id);
+  if (hit) document.getElementById('stat1').textContent = `✅ 点击命中: ${hit.label}（颜色拾取法，O(1) 复杂度）`;
+});
+
+// ══════════════════════════════════════════
+// Panel 2: 低代码拖拽画布
+// ══════════════════════════════════════════
+const c2 = document.getElementById('c2');
+const ctx2 = c2.getContext('2d');
+let elements2 = [];
+let selected2 = null;
+let dragging2 = false, dragOffX = 0, dragOffY = 0, dragFromX = 0, dragFromY = 0;
+const history2 = [];
+let idCounter = 1;
+
+const COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899'];
+
+function addShape(type) {
+  const color = COLORS[elements2.length % COLORS.length];
+  const x = 60 + Math.random() * 300, y = 60 + Math.random() * 160;
+  const el = { id: idCounter++, type, x, y, color,
+    w: type === 'circle' ? 0 : 100 + Math.random()*60,
+    h: type === 'circle' ? 0 : 50 + Math.random()*40,
+    r: type === 'circle' ? 35 + Math.random()*20 : 0,
+    label: type === 'text' ? '双击编辑' : '' };
+  elements2.push(el);
+  history2.push({ type: 'add', el });
+  render2();
+}
+
+function undoAction() {
+  const cmd = history2.pop();
+  if (!cmd) return;
+  if (cmd.type === 'add') elements2 = elements2.filter(e => e.id !== cmd.el.id);
+  else if (cmd.type === 'move') { cmd.el.x = cmd.fromX; cmd.el.y = cmd.fromY; }
+  else if (cmd.type === 'delete') elements2.push(cmd.el);
+  selected2 = null; render2();
+}
+
+function clearAll() {
+  elements2.forEach(el => history2.push({ type: 'delete', el }));
+  elements2 = []; selected2 = null; render2();
+}
+
+function hitTest2(mx, my) {
+  for (let i = elements2.length - 1; i >= 0; i--) {
+    const el = elements2[i];
+    if (el.type === 'circle') { const dx=mx-el.x,dy=my-el.y; if(dx*dx+dy*dy<=el.r*el.r) return el; }
+    else if (mx>=el.x && mx<=el.x+el.w && my>=el.y && my<=el.y+el.h) return el;
+  }
+  return null;
+}
+
+function drawHandles(el) {
+  const pts = el.type === 'circle'
+    ? [{x:el.x-el.r,y:el.y},{x:el.x+el.r,y:el.y},{x:el.x,y:el.y-el.r},{x:el.x,y:el.y+el.r}]
+    : [{x:el.x,y:el.y},{x:el.x+el.w/2,y:el.y},{x:el.x+el.w,y:el.y},{x:el.x+el.w,y:el.y+el.h/2},{x:el.x+el.w,y:el.y+el.h},{x:el.x+el.w/2,y:el.y+el.h},{x:el.x,y:el.y+el.h},{x:el.x,y:el.y+el.h/2}];
+  pts.forEach(p => {
+    ctx2.fillStyle = '#fff'; ctx2.strokeStyle = '#3b82f6'; ctx2.lineWidth = 1.5;
+    ctx2.fillRect(p.x-4, p.y-4, 8, 8); ctx2.strokeRect(p.x-4, p.y-4, 8, 8);
+  });
+}
+
+function render2() {
+  const W = c2.width, H = c2.height;
+  ctx2.clearRect(0, 0, W, H);
+  ctx2.fillStyle = '#0f1117'; ctx2.fillRect(0, 0, W, H);
+  // 网格
+  ctx2.strokeStyle = '#1a2030'; ctx2.lineWidth = 1;
+  for (let x = 0; x < W; x += 20) { ctx2.beginPath(); ctx2.moveTo(x,0); ctx2.lineTo(x,H); ctx2.stroke(); }
+  for (let y = 0; y < H; y += 20) { ctx2.beginPath(); ctx2.moveTo(0,y); ctx2.lineTo(W,y); ctx2.stroke(); }
+
+  elements2.forEach(el => {
+    const isSel = el === selected2;
+    ctx2.save();
+    if (isSel) { ctx2.shadowColor = el.color; ctx2.shadowBlur = 12; }
+    ctx2.fillStyle = el.color + (isSel ? 'ee' : '99');
+    ctx2.strokeStyle = isSel ? '#fff' : el.color;
+    ctx2.lineWidth = isSel ? 2 : 1;
+
+    if (el.type === 'circle') {
+      ctx2.beginPath(); ctx2.arc(el.x, el.y, el.r, 0, Math.PI*2); ctx2.fill(); ctx2.stroke();
+    } else if (el.type === 'text') {
+      ctx2.fillStyle = el.color; ctx2.font = 'bold 16px sans-serif'; ctx2.textBaseline = 'middle';
+      ctx2.fillText(el.label, el.x, el.y + 20);
+      if (isSel) { ctx2.strokeRect(el.x - 4, el.y, ctx2.measureText(el.label).width + 8, 40); }
+    } else {
+      ctx2.beginPath(); ctx2.roundRect(el.x, el.y, el.w, el.h, 6); ctx2.fill(); ctx2.stroke();
+    }
+    ctx2.restore();
+    if (isSel) drawHandles(el);
+  });
+
+  document.getElementById('stat2').textContent = `${elements2.length} 个元素 | 历史栈: ${history2.length} 步 | 点击选中，拖拽移动`;
+}
+
+c2.addEventListener('mousedown', e => {
+  const rect = c2.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const hit = hitTest2(mx, my);
+  selected2 = hit;
+  if (hit) {
+    dragging2 = true;
+    dragOffX = mx - hit.x; dragOffY = my - hit.y;
+    dragFromX = hit.x; dragFromY = hit.y;
+  }
+  render2();
+});
+
+c2.addEventListener('mousemove', e => {
+  if (!dragging2 || !selected2) return;
+  const rect = c2.getBoundingClientRect();
+  selected2.x = e.clientX - rect.left - dragOffX;
+  selected2.y = e.clientY - rect.top - dragOffY;
+  render2();
+});
+
+document.addEventListener('mouseup', () => {
+  if (dragging2 && selected2 && (selected2.x !== dragFromX || selected2.y !== dragFromY)) {
+    history2.push({ type: 'move', el: selected2, fromX: dragFromX, fromY: dragFromY });
+  }
+  dragging2 = false;
+});
+
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undoAction(); }
+  if (e.key === 'Delete' && selected2) {
+    history2.push({ type: 'delete', el: selected2 });
+    elements2 = elements2.filter(el => el !== selected2);
+    selected2 = null; render2();
+  }
+});
+
+// 初始添加几个示例元素
+addShape('rect'); addShape('circle'); addShape('rect'); addShape('text');
+history2.length = 0; // 清空初始历史，让用户从干净状态开始
+
+window.addEventListener('tabchange', () => { render0(); render1(); render2(); });
+</script>
+</body>
+</html>

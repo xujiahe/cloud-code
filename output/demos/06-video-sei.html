@@ -1,0 +1,578 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="_common.css">
+  <style>
+    .video-wrap {
+      position: relative;
+      width: 480px; height: 270px;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .video-wrap canvas {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      border-radius: 0;
+    }
+    .video-wrap video {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .pts-badge {
+      position: absolute; top: 8px; right: 8px;
+      background: rgba(0,0,0,0.6);
+      color: #94a3b8; font-size: 11px; font-family: monospace;
+      padding: 3px 8px; border-radius: 4px;
+      pointer-events: none;
+    }
+    .panel-right code { display: block; margin: 2px 0; }
+    .legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .legend-item { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #64748b; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div id="tab-bar"></div>
+
+<!-- Panel 0: 目标检测叠加 -->
+<div class="panel">
+  <div class="panel-left">
+    <div class="video-wrap" id="wrap0">
+      <canvas id="scene0" width="480" height="270"></canvas>
+      <canvas id="overlay0" width="480" height="270"></canvas>
+      <div class="pts-badge" id="pts0">PTS: 0.000s | SEI: --</div>
+    </div>
+    <div class="controls">
+      <button id="btn-play0" onclick="togglePlay0()">▶ 播放</button>
+      <label>目标数 <input type="range" id="obj-count" min="1" max="20" value="6" oninput="updateObjCount()"></label>
+      <label>速度 <input type="range" id="speed" min="1" max="5" value="2"></label>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>SEI 目标检测叠加</h3>
+    <p>模拟 H.264 SEI 携带目标检测数据，与视频帧精确对齐渲染。</p>
+    <p><code>requestVideoFrameCallback</code></p>
+    <p>每帧视频呈现时触发，<code>metadata.mediaTime</code> 是精确 PTS。</p>
+    <p><code>seiBuffer.query(pts)</code></p>
+    <p>以 PTS 为 key 查询 SEI 数据，容差 ±16ms。</p>
+    <p>坐标为归一化坐标（0~1），映射到 Canvas 像素时乘以宽高。</p>
+    <div class="legend" id="legend0"></div>
+  </div>
+</div>
+
+<!-- Panel 1: 轨迹 + 热力图叠加 -->
+<div class="panel">
+  <div class="panel-left">
+    <div class="video-wrap" id="wrap1">
+      <canvas id="scene1" width="480" height="270"></canvas>
+      <canvas id="overlay1" width="480" height="270"></canvas>
+      <div class="pts-badge" id="pts1">PTS: 0.000s</div>
+    </div>
+    <div class="controls">
+      <button id="btn-play1" onclick="togglePlay1()">▶ 播放</button>
+      <button onclick="toggleHeatmap()">切换热力图</button>
+      <button onclick="toggleTracks()">切换轨迹</button>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>轨迹 + 热力图叠加</h3>
+    <p>热力图数据量大（每帧 64×64 概率矩阵），模拟 Worker 离屏渲染后 <code>drawImage</code> 贴图。</p>
+    <p>轨迹点为历史 PTS 序列，每帧追加最新位置。</p>
+    <p>增量更新：只更新变化的目标，不全量重绘。</p>
+    <p><strong>SEI 丢失处理：</strong></p>
+    <p>连续丢失 ≤3 帧 → 保持上一帧（避免闪烁）</p>
+    <p>连续丢失 &gt;3 帧 → 清空叠加层</p>
+  </div>
+</div>
+
+<!-- Panel 2: 时间对齐可视化 -->
+<div class="panel">
+  <div class="panel-left">
+    <canvas id="c2" width="480" height="300"></canvas>
+    <div class="controls">
+      <button onclick="resetTimeline()">重置</button>
+      <label>模拟延迟 <input type="range" id="delay-sim" min="0" max="200" value="0" oninput="updateDelay()"> <span id="delay-val">0ms</span></label>
+    </div>
+  </div>
+  <div class="panel-right">
+    <h3>帧对齐时间线可视化</h3>
+    <p>展示视频帧（蓝色）与 SEI 数据（橙色）的时间对齐关系。</p>
+    <p>绿色连线 = 成功匹配（PTS 差 &lt; 16ms）</p>
+    <p>红色 = 未匹配（SEI 丢失或延迟过大）</p>
+    <p>拖动"模拟延迟"滑块，观察 SEI 与视频帧的时间偏移如何影响匹配结果。</p>
+    <p>容差窗口（灰色区域）= ±16ms（半帧时长）</p>
+  </div>
+</div>
+
+<script src="_layout.js"></script>
+<script>
+initLayout('Video + Canvas SEI 叠加', ['目标检测叠加', '轨迹+热力图', '帧对齐时间线']);
+
+// ══════════════════════════════════════════
+// 公共：模拟 SEI 数据生成器
+// ══════════════════════════════════════════
+const CLASS_NAMES = ['行人', '车辆', '自行车', '摩托车', '卡车', '公交车'];
+const CLASS_COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4'];
+
+class SimulatedSEISource {
+  constructor(objectCount = 6) {
+    this.objectCount = objectCount;
+    // 初始化目标状态（归一化坐标）
+    this._objects = Array.from({ length: objectCount }, (_, i) => ({
+      id: i,
+      classId: i % CLASS_NAMES.length,
+      x: 0.05 + Math.random() * 0.7,
+      y: 0.1 + Math.random() * 0.6,
+      w: 0.08 + Math.random() * 0.1,
+      h: 0.1 + Math.random() * 0.12,
+      vx: (Math.random() - 0.5) * 0.003,
+      vy: (Math.random() - 0.5) * 0.002,
+      confidence: 0.7 + Math.random() * 0.3,
+    }));
+    this._pts = 0;
+    this._trackHistory = new Map(); // id → [{x,y,pts}]
+  }
+
+  // 模拟每帧 SEI 数据（随 PTS 更新）
+  tick(pts, speedMul = 1) {
+    this._pts = pts;
+    const speed = speedMul;
+
+    this._objects.forEach(obj => {
+      obj.x += obj.vx * speed;
+      obj.y += obj.vy * speed;
+      // 边界反弹
+      if (obj.x < 0.02 || obj.x + obj.w > 0.98) { obj.vx *= -1; obj.x = Math.max(0.02, Math.min(0.98 - obj.w, obj.x)); }
+      if (obj.y < 0.05 || obj.y + obj.h > 0.95) { obj.vy *= -1; obj.y = Math.max(0.05, Math.min(0.95 - obj.h, obj.y)); }
+      // 置信度轻微抖动
+      obj.confidence = Math.max(0.5, Math.min(1, obj.confidence + (Math.random() - 0.5) * 0.02));
+
+      // 记录轨迹
+      if (!this._trackHistory.has(obj.id)) this._trackHistory.set(obj.id, []);
+      const hist = this._trackHistory.get(obj.id);
+      hist.push({ x: obj.x + obj.w / 2, y: obj.y + obj.h / 2, pts });
+      if (hist.length > 60) hist.shift(); // 保留最近 60 帧轨迹
+    });
+
+    return {
+      pts,
+      objects: this._objects.map(o => ({ ...o })),
+      tracks: Array.from(this._trackHistory.entries()).map(([id, pts]) => ({ id, points: pts.map(p => [p.x, p.y]) })),
+    };
+  }
+
+  setCount(n) {
+    this.objectCount = n;
+    while (this._objects.length < n) {
+      const i = this._objects.length;
+      this._objects.push({ id: i, classId: i % CLASS_NAMES.length, x: 0.1 + Math.random() * 0.7, y: 0.1 + Math.random() * 0.6, w: 0.08 + Math.random() * 0.1, h: 0.1 + Math.random() * 0.12, vx: (Math.random() - 0.5) * 0.003, vy: (Math.random() - 0.5) * 0.002, confidence: 0.8 });
+    }
+    this._objects.length = n;
+  }
+}
+
+// ══════════════════════════════════════════
+// Panel 0: 目标检测叠加
+// ══════════════════════════════════════════
+const scene0 = document.getElementById('scene0');
+const sctx0 = scene0.getContext('2d');
+const overlay0 = document.getElementById('overlay0');
+const octx0 = overlay0.getContext('2d');
+const sei0 = new SimulatedSEISource(6);
+let pts0 = 0, playing0 = false, raf0 = null;
+
+// 模拟 SEI 缓冲队列
+const seiBuffer0 = new Map();
+
+function renderScene0(pts) {
+  const W = scene0.width, H = scene0.height;
+  sctx0.clearRect(0, 0, W, H);
+
+  // 模拟视频画面（动态背景）
+  const t = pts * 0.3;
+  const grad = sctx0.createLinearGradient(0, 0, W, H);
+  grad.addColorStop(0, `hsl(${200 + Math.sin(t) * 20}, 40%, 12%)`);
+  grad.addColorStop(1, `hsl(${220 + Math.cos(t) * 15}, 35%, 8%)`);
+  sctx0.fillStyle = grad;
+  sctx0.fillRect(0, 0, W, H);
+
+  // 模拟道路场景
+  sctx0.fillStyle = '#1a1a2e';
+  sctx0.fillRect(0, H * 0.55, W, H * 0.45);
+  // 车道线
+  sctx0.strokeStyle = '#ffffff22'; sctx0.lineWidth = 2; sctx0.setLineDash([30, 20]);
+  [0.3, 0.5, 0.7].forEach(x => {
+    sctx0.beginPath(); sctx0.moveTo(W * x, H * 0.55); sctx0.lineTo(W * x, H); sctx0.stroke();
+  });
+  sctx0.setLineDash([]);
+  // 地平线
+  sctx0.strokeStyle = '#ffffff11'; sctx0.lineWidth = 1;
+  sctx0.beginPath(); sctx0.moveTo(0, H * 0.55); sctx0.lineTo(W, H * 0.55); sctx0.stroke();
+  // 模拟建筑轮廓
+  sctx0.fillStyle = '#0d1117';
+  [[0,0.3,0.15,0.55],[0.15,0.2,0.12,0.55],[0.3,0.1,0.18,0.55],[0.55,0.25,0.15,0.55],[0.75,0.15,0.25,0.55]].forEach(([x,y,w,h]) => {
+    sctx0.fillRect(W*x, H*y, W*w, H*(h-y));
+  });
+}
+
+function renderOverlay0(seiData) {
+  const W = overlay0.width, H = overlay0.height;
+  octx0.clearRect(0, 0, W, H);
+  if (!seiData) return;
+
+  seiData.objects.forEach(obj => {
+    const { x, y, w, h, classId, confidence, id } = obj;
+    const px = x * W, py = y * H, pw = w * W, ph = h * H;
+    const color = CLASS_COLORS[classId];
+
+    // 目标框
+    octx0.strokeStyle = color; octx0.lineWidth = 2;
+    octx0.strokeRect(px, py, pw, ph);
+
+    // 角标装饰（雷达感）
+    const cs = 8;
+    octx0.strokeStyle = color; octx0.lineWidth = 2;
+    [[px,py],[px+pw,py],[px,py+ph],[px+pw,py+ph]].forEach(([cx,cy], i) => {
+      octx0.beginPath();
+      octx0.moveTo(cx + (i%2===0?cs:-cs), cy);
+      octx0.lineTo(cx, cy);
+      octx0.lineTo(cx, cy + (i<2?cs:-cs));
+      octx0.stroke();
+    });
+
+    // 标签背景
+    const labelW = 90, labelH = 20;
+    octx0.fillStyle = color + 'dd';
+    octx0.beginPath(); octx0.roundRect(px, py - labelH - 2, labelW, labelH, 3); octx0.fill();
+
+    // 标签文字
+    octx0.fillStyle = '#fff'; octx0.font = 'bold 11px monospace'; octx0.textBaseline = 'middle';
+    octx0.fillText(`${CLASS_NAMES[classId]} ${(confidence*100).toFixed(0)}%`, px + 5, py - labelH/2 - 2);
+
+    // ID 标注
+    octx0.fillStyle = color + '88'; octx0.font = '10px monospace';
+    octx0.fillText(`#${id}`, px + pw - 20, py + 12);
+  });
+
+  // 右上角信息面板
+  octx0.fillStyle = 'rgba(0,0,0,0.6)';
+  octx0.beginPath(); octx0.roundRect(W - 130, 8, 122, 22 + seiData.objects.length * 16, 4); octx0.fill();
+  octx0.fillStyle = '#60a5fa'; octx0.font = 'bold 11px monospace';
+  octx0.fillText(`SEI PTS: ${seiData.pts.toFixed(3)}s`, W - 124, 22);
+  seiData.objects.forEach((obj, i) => {
+    octx0.fillStyle = CLASS_COLORS[obj.classId];
+    octx0.fillText(`${CLASS_NAMES[obj.classId]}: ${(obj.confidence*100).toFixed(0)}%`, W - 124, 38 + i * 16);
+  });
+}
+
+function animLoop0(ts) {
+  const speed = +document.getElementById('speed').value;
+  pts0 += 0.016 * speed;
+
+  // 模拟 SEI 数据生成（模拟 Worker 解析后存入缓冲）
+  const seiData = sei0.tick(pts0, speed);
+  seiBuffer0.set(pts0, seiData);
+
+  // 模拟 requestVideoFrameCallback：查询当前 PTS 的 SEI
+  const queriedSEI = seiBuffer0.get(pts0) ?? null;
+
+  renderScene0(pts0);
+  renderOverlay0(queriedSEI);
+
+  document.getElementById('pts0').textContent =
+    `PTS: ${pts0.toFixed(3)}s | SEI: ${seiData.objects.length} 目标`;
+
+  // 清理过期缓冲
+  for (const [k] of seiBuffer0) { if (k < pts0 - 2) seiBuffer0.delete(k); else break; }
+
+  if (playing0) raf0 = requestAnimationFrame(animLoop0);
+}
+
+function togglePlay0() {
+  playing0 = !playing0;
+  document.getElementById('btn-play0').textContent = playing0 ? '⏸ 暂停' : '▶ 播放';
+  if (playing0) raf0 = requestAnimationFrame(animLoop0);
+  else cancelAnimationFrame(raf0);
+}
+
+function updateObjCount() {
+  sei0.setCount(+document.getElementById('obj-count').value);
+}
+
+// 图例
+const legend = document.getElementById('legend0');
+CLASS_NAMES.forEach((name, i) => {
+  const item = document.createElement('div'); item.className = 'legend-item';
+  item.innerHTML = `<div class="legend-dot" style="background:${CLASS_COLORS[i]}"></div>${name}`;
+  legend.appendChild(item);
+});
+
+// 初始渲染
+renderScene0(0);
+renderOverlay0(sei0.tick(0));
+
+// ══════════════════════════════════════════
+// Panel 1: 轨迹 + 热力图叠加
+// ══════════════════════════════════════════
+const scene1 = document.getElementById('scene1');
+const sctx1 = scene1.getContext('2d');
+const overlay1 = document.getElementById('overlay1');
+const octx1 = overlay1.getContext('2d');
+const sei1 = new SimulatedSEISource(4);
+let pts1 = 0, playing1 = false, raf1 = null;
+let showHeatmap = true, showTracks = true;
+let missingCount1 = 0, lastSEI1 = null;
+
+// 离屏 Canvas 用于热力图渲染（模拟 Worker OffscreenCanvas）
+const heatmapOffscreen = document.createElement('canvas');
+heatmapOffscreen.width = 64; heatmapOffscreen.height = 36;
+const heatCtx = heatmapOffscreen.getContext('2d');
+
+function renderHeatmap(objects) {
+  // 在离屏 Canvas 上渲染热力图（模拟 Worker 中的 OffscreenCanvas 渲染）
+  const W = heatmapOffscreen.width, H = heatmapOffscreen.height;
+  heatCtx.clearRect(0, 0, W, H);
+
+  // 为每个目标在其位置叠加高斯热点
+  objects.forEach(obj => {
+    const cx = (obj.x + obj.w / 2) * W;
+    const cy = (obj.y + obj.h / 2) * H;
+    const r = Math.max(obj.w, obj.h) * W * 0.8;
+
+    const grad = heatCtx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0, `rgba(255,50,50,${obj.confidence * 0.6})`);
+    grad.addColorStop(0.4, `rgba(255,150,0,${obj.confidence * 0.3})`);
+    grad.addColorStop(1, 'rgba(0,0,255,0)');
+    heatCtx.fillStyle = grad;
+    heatCtx.fillRect(0, 0, W, H);
+  });
+}
+
+function renderScene1(pts) {
+  const W = scene1.width, H = scene1.height;
+  sctx1.clearRect(0, 0, W, H);
+  const t = pts * 0.2;
+  const grad = sctx1.createLinearGradient(0, 0, W, H);
+  grad.addColorStop(0, `hsl(${180 + Math.sin(t)*15}, 35%, 10%)`);
+  grad.addColorStop(1, `hsl(${200 + Math.cos(t)*10}, 30%, 7%)`);
+  sctx1.fillStyle = grad; sctx1.fillRect(0, 0, W, H);
+  // 网格背景（模拟俯视图）
+  sctx1.strokeStyle = '#ffffff08'; sctx1.lineWidth = 1;
+  for (let x = 0; x < W; x += 40) { sctx1.beginPath(); sctx1.moveTo(x,0); sctx1.lineTo(x,H); sctx1.stroke(); }
+  for (let y = 0; y < H; y += 40) { sctx1.beginPath(); sctx1.moveTo(0,y); sctx1.lineTo(W,y); sctx1.stroke(); }
+}
+
+function renderOverlay1(seiData, status) {
+  const W = overlay1.width, H = overlay1.height;
+  octx1.clearRect(0, 0, W, H);
+
+  if (!seiData) return;
+
+  // 热力图（模拟 Worker 离屏渲染后 drawImage 贴图）
+  if (showHeatmap) {
+    renderHeatmap(seiData.objects);
+    octx1.save();
+    octx1.globalAlpha = 0.55;
+    octx1.drawImage(heatmapOffscreen, 0, 0, W, H); // 一次 drawImage 完成热力图叠加
+    octx1.restore();
+  }
+
+  // 轨迹线
+  if (showTracks) {
+    seiData.tracks.forEach(track => {
+      if (track.points.length < 2) return;
+      const obj = seiData.objects.find(o => o.id === track.id);
+      if (!obj) return;
+      const color = CLASS_COLORS[obj.classId];
+
+      octx1.beginPath();
+      track.points.forEach(([nx, ny], i) => {
+        const px = nx * W, py = ny * H;
+        i === 0 ? octx1.moveTo(px, py) : octx1.lineTo(px, py);
+      });
+      octx1.strokeStyle = color + 'aa'; octx1.lineWidth = 2;
+      octx1.stroke();
+
+      // 轨迹末端圆点
+      const last = track.points.at(-1);
+      octx1.beginPath(); octx1.arc(last[0]*W, last[1]*H, 4, 0, Math.PI*2);
+      octx1.fillStyle = color; octx1.fill();
+    });
+  }
+
+  // 目标框（简化版）
+  seiData.objects.forEach(obj => {
+    const px = obj.x * W, py = obj.y * H, pw = obj.w * W, ph = obj.h * H;
+    const color = CLASS_COLORS[obj.classId];
+    octx1.strokeStyle = color; octx1.lineWidth = 1.5;
+    octx1.strokeRect(px, py, pw, ph);
+  });
+
+  // SEI 丢失状态提示
+  if (status === 'hold') {
+    octx1.fillStyle = 'rgba(251,191,36,0.8)';
+    octx1.font = 'bold 12px monospace'; octx1.textBaseline = 'top';
+    octx1.fillText(`⚠ SEI 保持 (丢失 ${missingCount1} 帧)`, 8, 8);
+  }
+}
+
+function animLoop1(ts) {
+  pts1 += 0.016 * 2;
+
+  // 模拟 SEI 偶发丢失（5% 概率）
+  const seiMissing = Math.random() < 0.05;
+  let status = 'hit';
+
+  if (!seiMissing) {
+    lastSEI1 = sei1.tick(pts1, 2);
+    missingCount1 = 0;
+  } else {
+    missingCount1++;
+    if (missingCount1 > 3) { lastSEI1 = null; status = 'clear'; }
+    else status = 'hold';
+  }
+
+  renderScene1(pts1);
+  renderOverlay1(lastSEI1, status);
+
+  document.getElementById('pts1').textContent =
+    `PTS: ${pts1.toFixed(3)}s | ${status === 'hit' ? '✅ 同步' : status === 'hold' ? '⚠ 保持' : '❌ 丢失'}`;
+
+  if (playing1) raf1 = requestAnimationFrame(animLoop1);
+}
+
+function togglePlay1() {
+  playing1 = !playing1;
+  document.getElementById('btn-play1').textContent = playing1 ? '⏸ 暂停' : '▶ 播放';
+  if (playing1) raf1 = requestAnimationFrame(animLoop1);
+  else cancelAnimationFrame(raf1);
+}
+
+function toggleHeatmap() { showHeatmap = !showHeatmap; }
+function toggleTracks() { showTracks = !showTracks; }
+
+renderScene1(0);
+renderOverlay1(sei1.tick(0), 'hit');
+
+// ══════════════════════════════════════════
+// Panel 2: 帧对齐时间线可视化
+// ══════════════════════════════════════════
+const c2 = document.getElementById('c2');
+const ctx2 = c2.getContext('2d');
+let timelineFrames = [];
+let timelineRaf = null;
+let simDelay = 0;
+let tlPts = 0;
+
+function updateDelay() {
+  simDelay = +document.getElementById('delay-sim').value;
+  document.getElementById('delay-val').textContent = simDelay + 'ms';
+}
+
+function resetTimeline() {
+  timelineFrames = [];
+  tlPts = 0;
+}
+
+function renderTimeline() {
+  const W = c2.width, H = c2.height;
+  ctx2.clearRect(0, 0, W, H);
+  ctx2.fillStyle = '#0f1117'; ctx2.fillRect(0, 0, W, H);
+
+  const TRACK_Y_VIDEO = 80;
+  const TRACK_Y_SEI = 160;
+  const FRAME_W = 28;
+  const TOLERANCE = 16; // ms
+  const maxFrames = Math.floor((W - 60) / FRAME_W);
+
+  // 生成新帧
+  tlPts += 16.67; // 60fps
+  const seiPts = tlPts + simDelay; // SEI 延迟
+  const matched = Math.abs(seiPts - tlPts) <= TOLERANCE;
+
+  timelineFrames.push({ videoPts: tlPts, seiPts, matched });
+  if (timelineFrames.length > maxFrames) timelineFrames.shift();
+
+  // 标题
+  ctx2.fillStyle = '#94a3b8'; ctx2.font = 'bold 13px monospace';
+  ctx2.fillText('视频帧时间线', 10, 30);
+  ctx2.fillStyle = '#64748b'; ctx2.font = '12px monospace';
+  ctx2.fillText(`容差窗口: ±${TOLERANCE}ms  |  模拟 SEI 延迟: ${simDelay}ms`, 10, 50);
+
+  // 轨道标签
+  ctx2.fillStyle = '#3b82f6'; ctx2.font = '12px monospace';
+  ctx2.fillText('视频帧', 10, TRACK_Y_VIDEO + 5);
+  ctx2.fillStyle = '#f59e0b';
+  ctx2.fillText('SEI 数据', 10, TRACK_Y_SEI + 5);
+
+  // 轨道线
+  ctx2.strokeStyle = '#1e2535'; ctx2.lineWidth = 1;
+  ctx2.beginPath(); ctx2.moveTo(60, TRACK_Y_VIDEO); ctx2.lineTo(W - 10, TRACK_Y_VIDEO); ctx2.stroke();
+  ctx2.beginPath(); ctx2.moveTo(60, TRACK_Y_SEI); ctx2.lineTo(W - 10, TRACK_Y_SEI); ctx2.stroke();
+
+  timelineFrames.forEach((frame, i) => {
+    const x = 60 + i * FRAME_W;
+
+    // 容差窗口（灰色背景）
+    ctx2.fillStyle = 'rgba(100,116,139,0.08)';
+    ctx2.fillRect(x - FRAME_W/2, TRACK_Y_VIDEO - 20, FRAME_W, TRACK_Y_SEI - TRACK_Y_VIDEO + 40);
+
+    // 视频帧（蓝色方块）
+    ctx2.fillStyle = '#3b82f6';
+    ctx2.beginPath(); ctx2.roundRect(x - 8, TRACK_Y_VIDEO - 10, 16, 20, 3); ctx2.fill();
+
+    // SEI 帧（橙色方块），位置根据延迟偏移
+    const seiX = x + (simDelay / 16.67) * FRAME_W;
+    const seiInView = seiX >= 60 && seiX <= W - 10;
+    if (seiInView) {
+      ctx2.fillStyle = frame.matched ? '#f59e0b' : '#ef4444';
+      ctx2.beginPath(); ctx2.roundRect(seiX - 8, TRACK_Y_SEI - 10, 16, 20, 3); ctx2.fill();
+
+      // 连线
+      ctx2.strokeStyle = frame.matched ? '#10b981' : '#ef4444';
+      ctx2.lineWidth = frame.matched ? 1.5 : 1;
+      ctx2.setLineDash(frame.matched ? [] : [3, 3]);
+      ctx2.beginPath(); ctx2.moveTo(x, TRACK_Y_VIDEO + 10); ctx2.lineTo(seiX, TRACK_Y_SEI - 10); ctx2.stroke();
+      ctx2.setLineDash([]);
+    }
+
+    // PTS 标注（每5帧）
+    if (i % 5 === 0) {
+      ctx2.fillStyle = '#334155'; ctx2.font = '10px monospace';
+      ctx2.fillText(`${(frame.videoPts/1000).toFixed(2)}s`, x - 12, TRACK_Y_VIDEO - 18);
+    }
+  });
+
+  // 图例
+  const legendY = 240;
+  [[`#3b82f6`, '视频帧'], [`#f59e0b`, 'SEI 匹配'], [`#ef4444`, 'SEI 未匹配'], [`#10b981`, '对齐连线']].forEach(([color, label], i) => {
+    ctx2.fillStyle = color; ctx2.fillRect(10 + i * 110, legendY, 12, 12);
+    ctx2.fillStyle = '#64748b'; ctx2.font = '11px monospace';
+    ctx2.fillText(label, 26 + i * 110, legendY + 10);
+  });
+
+  // 统计
+  const matchRate = timelineFrames.length > 0
+    ? (timelineFrames.filter(f => f.matched).length / timelineFrames.length * 100).toFixed(1)
+    : 0;
+  ctx2.fillStyle = '#94a3b8'; ctx2.font = '12px monospace';
+  ctx2.fillText(`匹配率: ${matchRate}%  |  总帧数: ${timelineFrames.length}`, 10, 275);
+
+  timelineRaf = requestAnimationFrame(renderTimeline);
+}
+
+renderTimeline();
+
+window.addEventListener('tabchange', () => {
+  renderScene0(pts0); renderOverlay0(sei0.tick(pts0));
+  renderScene1(pts1); renderOverlay1(lastSEI1, 'hit');
+});
+</script>
+</body>
+</html>
