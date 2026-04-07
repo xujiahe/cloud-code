@@ -56,12 +56,22 @@
   </div>
   <div class="panel-right">
     <h3>SEI 目标检测叠加</h3>
-    <p>模拟 H.264 SEI 携带目标检测数据，与视频帧精确对齐渲染。</p>
-    <p><code>requestVideoFrameCallback</code></p>
-    <p>每帧视频呈现时触发，<code>metadata.mediaTime</code> 是精确 PTS。</p>
-    <p><code>seiBuffer.query(pts)</code></p>
-    <p>以 PTS 为 key 查询 SEI 数据，容差 ±16ms。</p>
-    <p>坐标为归一化坐标（0~1），映射到 Canvas 像素时乘以宽高。</p>
+
+    <p><strong>什么是 SEI？</strong></p>
+    <p>H.264 SEI（Supplemental Enhancement Information）是嵌入视频码流的附加数据单元，NAL type=6，不影响解码画面。业务数据通过 <code>user_data_unregistered</code>（type=5）写入，前 16 字节为 UUID，之后是自定义 payload。</p>
+
+    <p><strong>数据流向</strong></p>
+    <p>① MSE <code>appendBuffer</code> 拦截码流 → ② Worker 扫描 NALU、DataView 解析 payload → ③ <code>postMessage</code> 传回主线程 → ④ 存入 <code>seiBuffer: Map&lt;pts, data&gt;</code> → ⑤ <code>requestVideoFrameCallback</code> 触发时按 PTS 查询并渲染。</p>
+
+    <p><strong>为什么不用 rAF？</strong></p>
+    <p><code>requestAnimationFrame</code> 与显示器刷新同步（~16ms），而视频帧呈现时机由解码器决定，两者不对齐会导致 ±1 帧误差。<code>requestVideoFrameCallback</code> 在每帧视频<em>实际呈现前</em>触发，<code>metadata.mediaTime</code> 精确到帧级 PTS。</p>
+
+    <p><strong>坐标归一化</strong></p>
+    <p>SEI 中存储归一化坐标（0~1），与分辨率无关。渲染时：<code>px = nx × canvasW</code>，<code>py = ny × canvasH</code>。若视频有 <code>object-fit: contain</code> 黑边，还需加上偏移量 <code>offsetX/Y</code>。</p>
+
+    <p><strong>本示例模拟了什么</strong></p>
+    <p>左侧画面 = 模拟视频帧（Canvas 绘制道路场景）；叠加层 = 模拟 SEI 解析后的目标框数据，每帧通过 <code>seiBuffer.get(pts)</code> 精确查询，右上角面板实时显示当前帧 PTS 与目标列表。</p>
+
     <div class="legend" id="legend0"></div>
   </div>
 </div>

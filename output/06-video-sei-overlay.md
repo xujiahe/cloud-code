@@ -57,21 +57,51 @@ graph TD
 
 **SEI（Supplemental Enhancement Information）** 是 H.264/H.265 标准中的附加信息单元，以 NAL Unit 形式嵌入码流，不影响解码画面，但可携带任意业务数据。
 
+**H.264 码流结构回顾：**
+
+H.264 码流由一系列 NAL Unit（Network Abstraction Layer Unit）组成，每个 NALU 前有 start code（`00 00 00 01`）。NALU 的第一个字节是 NAL header，低 5 位是 `nal_unit_type`：
+
+| nal_unit_type | 含义 |
+|---|---|
+| 1 | 非 IDR 图像的 slice |
+| 5 | IDR 图像（关键帧） |
+| 6 | **SEI（Supplemental Enhancement Information）** |
+| 7 | SPS（序列参数集） |
+| 8 | PPS（图像参数集） |
+
+**SEI 内部结构：**
+
+一个 SEI NALU 可以包含多条 SEI message，每条格式为：
+
+```
+[sei_type: 1字节] [payload_size: 1~N字节] [payload: payload_size字节]
+```
+
+`payload_size` 采用变长编码：若字节值为 `0xFF` 则累加并继续读下一字节，直到读到非 `0xFF` 字节为止。
+
 **SEI 类型 5 — `user_data_unregistered`：**
 
-- 最常用的自定义数据通道
-- 结构：`[NAL header][SEI type=5][payload size][UUID 16字节][自定义数据]`
-- UUID 用于区分不同业务方的数据（防冲突）
+- 最常用的自定义数据通道，payload 结构为：`[UUID 16字节][自定义二进制数据]`
+- UUID 由业务方自定义，用于区分不同厂商/业务的 SEI 数据，防止冲突
+- 自定义数据部分完全由业务方定义，通常用 `DataView` 按约定的二进制协议解析
+
+**PTS 时间戳绑定：**
+
+SEI NALU 与其所在的视频帧共享同一个 PTS（Presentation Timestamp）。在 MSE 场景下，`appendBuffer` 送入的 segment 中，SEI 和对应的图像 slice 在同一个 GOP 内，解码器会将它们关联到同一帧。这是实现帧级精确对齐的物理基础。
 
 **Web 端提取路径对比：**
 
 | 方案 | 原理 | 优点 | 缺点 |
 |------|------|------|------|
-| MSE + 拦截 appendBuffer | 在送入 SourceBuffer 前扫描 NALU | 兼容性好（Chrome 34+） | 需手动实现 NALU 解析器 |
-| WebCodecs EncodedVideoChunk | 解码前拦截编码帧解析 SEI | API 简洁，性能好 | Chrome 94+，兼容性较差 |
-| 服务端提取 + WebSocket 推送 | 服务端解析后与视频流并行推送 | 前端零解析成本 | 需服务端支持，有网络延迟 |
+| MSE + 拦截 appendBuffer | 在送入 SourceBuffer 前扫描 NALU | 兼容性好（Chrome 34+），无需额外服务端 | 需手动实现 NALU 解析器，主线程压力大 |
+| WebCodecs EncodedVideoChunk | 解码前拦截编码帧解析 SEI | API 简洁，可在 Worker 中使用 | Chrome 94+，Safari 16.4+，兼容性较差 |
+| 服务端提取 + WebSocket 推送 | 服务端解析后与视频流并行推送 | 前端零解析成本，支持任意格式 | 需服务端支持，引入额外网络延迟，需自行做时间同步 |
 
-**PTS 时间戳绑定：** SEI 与其所在视频帧共享同一个 PTS（Presentation Timestamp），这是帧级对齐的关键。
+**三种方案的选型建议：**
+
+- 纯前端、兼容性优先 → MSE 拦截 + Worker 解析
+- 新项目、Chrome 环境 → WebCodecs（更干净，无需 monkey-patch）
+- 服务端有能力、多端复用 → 服务端提取 + WebSocket，前端只做渲染
 
 ### 代码示例
 
@@ -170,27 +200,40 @@ const interceptMSEForSEI = (onSEI) => {
 
 **核心问题：** `requestAnimationFrame` 触发时机是显示器刷新（约 16ms），而视频帧的实际呈现时机由解码器决定，两者不同步。直接用 rAF + `video.currentTime` 查询 SEI 会有 ±1 帧的误差。
 
-**`requestVideoFrameCallback`（rVFC）：**
+**`video.currentTime` 的精度问题：**
 
-- Chrome 83+ 支持，在**每一帧视频实际呈现到屏幕前**触发回调
-- `metadata.mediaTime`：该帧的精确 PTS（秒），精度远高于 `video.currentTime`
-- `metadata.presentedFrames`：累计呈现帧数，可检测跳帧
+`video.currentTime` 是一个近似值，精度约为 ±1 帧（16ms@60fps）。原因是浏览器出于安全考虑（防止时序攻击）对时间精度做了限制，且 `currentTime` 的更新时机与帧呈现时机并不严格对齐。在 30fps 视频中，一帧时长约 33ms，误差可能导致查询到相邻帧的 SEI 数据。
+
+**`requestVideoFrameCallback`（rVFC）的工作原理：**
+
+rVFC 是浏览器在将视频帧**合成到屏幕之前**触发的回调，由视频解码器驱动，而非显示器刷新驱动。回调参数 `metadata` 包含：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `mediaTime` | number | 该帧的精确 PTS（秒），与 SEI 的 PTS 直接对应 |
+| `presentedFrames` | number | 累计呈现帧数，相邻两次差值 > 1 说明发生了跳帧 |
+| `expectedDisplayTime` | DOMHighResTimeStamp | 该帧预期显示到屏幕的时间 |
+| `width` / `height` | number | 视频帧的实际分辨率 |
+| `processingDuration` | number | 解码耗时（秒） |
 
 **rVFC vs rAF 对比：**
 
 | 维度 | requestAnimationFrame | requestVideoFrameCallback |
 |------|----------------------|--------------------------|
-| 触发时机 | 显示器刷新（~16ms） | 视频帧实际呈现时 |
-| 时间精度 | `performance.now()`，与视频帧无关 | `metadata.mediaTime`，精确到帧 |
-| 跳帧检测 | 不支持 | `metadata.presentedFrames` |
-| 暂停时触发 | 继续触发 | 不触发 |
+| 触发时机 | 显示器刷新（~16ms），与视频帧无关 | 视频帧实际呈现前，由解码器驱动 |
+| 时间精度 | `performance.now()`，与视频帧无关 | `metadata.mediaTime`，精确到帧级 PTS |
+| 跳帧检测 | 不支持 | `metadata.presentedFrames` 差值 |
+| 暂停时触发 | 继续触发（每帧都触发） | 不触发（视频不前进则无回调） |
+| 慢速播放 | 仍以显示器频率触发 | 随视频帧率触发（如 0.5x 速度则 ~30fps） |
 | 兼容性 | 全浏览器 | Chrome 83+，Safari 15.4+ |
 
 **SEI 队列设计原则：**
 
-- 以 PTS 为 key 存储，保持有序（便于近似查找）
-- 精确匹配优先，容差匹配兜底（容差 = 半帧时长 ≈ 16ms）
-- 定期清理过期数据（早于当前播放时间 2 秒的条目）
+- 以 PTS（秒，浮点数）为 key 存储，`Map` 保持插入顺序（近似有序）
+- 精确匹配优先：`seiBuffer.has(pts)`
+- 容差匹配兜底：遍历找 `|key - pts| < tolerance`，容差建议取半帧时长（`1 / fps / 2`）
+- 定期清理：早于 `currentTime - 2s` 的条目删除，防止内存无限增长
+- seek 后立即清空：避免旧位置的 SEI 数据污染新位置
 
 ### 代码示例
 
@@ -309,24 +352,51 @@ class SEIVideoSyncRenderer {
 
 ```
 视频码流（MSE appendBuffer）
-  ↓ 拦截，零拷贝 transfer ArrayBuffer
+  ↓ 拦截，buf.slice(0) 拷贝后 transfer 给 Worker
 SEI Worker：NALU 扫描 → DataView 解析 → postMessage(result)
-  ↓
-主线程：seiBuffer.set(pts, data)
-  ↓ requestVideoFrameCallback
-渲染：seiBuffer.query(pts) → Canvas 增量绘制
-  ↓（热力图场景）
+  ↓ 主线程 seiBuffer.set(pts, data)
+requestVideoFrameCallback 触发
+  ↓ seiBuffer.query(pts) 查询
+Canvas 增量绘制（只重绘变化目标）
+  ↓（热力图/掩码场景）
 Render Worker：OffscreenCanvas 渲染 → transferToImageBitmap()
-  ↓ 主线程 drawImage(bitmap)
+  ↓ 主线程 drawImage(bitmap) 一次贴图
 ```
 
-**关键优化点：**
+**为什么 SEI 数据量大是个问题：**
 
-1. **零拷贝传输**：`postMessage(buf, [buf])` 转移 ArrayBuffer 所有权，避免 O(n) 内存拷贝
-2. **增量更新**：对比前后帧目标列表，只重绘坐标/置信度发生变化的目标
-3. **分层 Canvas**：视频层（`<video>`）+ 叠加层（`<canvas>`），每帧只清除叠加层
-4. **批量绘制**：同类型图形合并为一条路径，减少 Canvas 状态切换
-5. **对象池**：复用目标框对象，减少 GC 压力
+以自动驾驶场景为例，每帧 SEI 可能包含：
+- 100+ 个目标框（每个约 20 字节）= 2KB
+- 64×64 语义分割掩码（每像素 1 字节）= 4KB
+- 轨迹历史点（每目标 30 帧 × 8 字节）= 24KB
+- 总计约 **30KB/帧**，30fps 下约 **900KB/s**
+
+如果在主线程同步解析，每帧解析耗时可能超过 5ms，严重影响页面响应。
+
+**关键优化点详解：**
+
+**① 零拷贝 ArrayBuffer 传输**
+
+`postMessage(data, [transferable])` 第二个参数指定可转移对象列表。转移后原线程的引用变为 `detached`（`byteLength === 0`），接收方获得完整所有权，整个过程无内存拷贝，时间复杂度 O(1)。
+
+注意：MSE 的 `appendBuffer` 仍需要原始 buffer，所以必须先 `buf.slice(0)` 拷贝一份再 transfer，不能直接 transfer 原始 buffer。
+
+**② DataView 二进制解析 vs JSON**
+
+SEI payload 通常是紧凑的二进制结构体，而非 JSON 字符串。原因：
+- JSON 字符串体积是二进制的 3~5 倍（数字需要字符编码）
+- JSON 解析需要词法分析，比 DataView 直接读内存慢 10x 以上
+- 二进制协议可以精确控制字节序（大端/小端）和数据类型
+
+**③ 增量更新策略**
+
+全量重绘的问题：即使只有 1 个目标移动了 1px，也要清空整个 Canvas 重绘所有目标。
+
+增量更新：对比前后帧的目标列表，只有坐标/置信度变化超过阈值（如 0.1%）的目标才触发重绘。对于静止目标（如停车场景中的停放车辆），可以完全跳过重绘。
+
+**④ 批量路径绘制**
+
+每次 `ctx.strokeStyle = color` 都会触发 Canvas 状态机切换，开销较大。将同类型（同 classId）的目标框合并为一条 `beginPath()` → 多个 `rect()` → 一次 `stroke()`，可将状态切换次数从 O(n) 降至 O(类别数)。
 
 ### 代码示例
 
@@ -458,7 +528,7 @@ class IncrementalOverlayRenderer {
 ```html
 <div class="video-container">
   <video id="video"></video>
-  <canvas id="overlay"></canvas>  <!-- 绝对定位，覆盖在 video 上 -->
+  <canvas id="overlay"></canvas>
 </div>
 ```
 
@@ -471,11 +541,39 @@ video, canvas {
 canvas { pointer-events: none; } /* 鼠标事件穿透到 video */
 ```
 
-**`object-fit: contain` 的黑边问题：**
+**`object-fit: contain` 的黑边问题详解：**
 
-当视频宽高比与容器不一致时，`object-fit: contain` 会在两侧或上下产生黑边。SEI 坐标是相对于**视频内容区域**的，而 Canvas 坐标是相对于**容器**的，需要计算实际视频渲染区域的偏移和缩放比。
+假设视频原始分辨率为 1920×1080（16:9），容器为 800×600（4:3）。`object-fit: contain` 会按较小缩放比缩放：
 
-**归一化坐标的优势：** SEI 中存储归一化坐标（0~1）而非像素坐标，使得同一份 SEI 数据可以适配任意分辨率的播放器，无需随分辨率变化重新编码。
+```
+scaleX = 800 / 1920 = 0.417
+scaleY = 600 / 1080 = 0.556
+scale  = min(0.417, 0.556) = 0.417  ← 取较小值
+
+renderW = 1920 × 0.417 = 800px  ← 撑满宽度
+renderH = 1080 × 0.417 = 450px  ← 未撑满高度
+
+offsetX = (800 - 800) / 2 = 0    ← 无水平黑边
+offsetY = (600 - 450) / 2 = 75px ← 上下各 75px 黑边
+```
+
+此时 SEI 中 `y=0` 对应的是视频内容顶部，映射到 Canvas 时应为 `75px`，而非 `0px`。若不处理偏移，目标框会整体偏上 75px。
+
+**归一化坐标的优势：**
+
+SEI 中存储归一化坐标（0~1）而非像素坐标，好处是：
+- 与视频分辨率解耦：同一份 SEI 数据可适配 720p/1080p/4K 播放器
+- 与播放器尺寸解耦：窗口缩放时无需重新编码 SEI
+- 坐标映射公式统一：`px = nx × renderW + offsetX`
+
+**DPR 高清适配与坐标的关系：**
+
+Canvas 的 `width`/`height` 属性是物理像素，CSS 的 `style.width`/`style.height` 是逻辑像素。在 DPR=2 的屏幕上，若 Canvas 物理尺寸为 1600×900，CSS 显示尺寸为 800×450，则坐标映射时需要额外乘以 DPR：
+
+```js
+const dprScale = canvas.width / video.clientWidth; // = DPR
+const canvasX = (offsetX + nx * renderW) * dprScale;
+```
 
 ### 代码示例
 
@@ -552,15 +650,33 @@ ro.observe(video);
 
 ### 参考答案
 
-**异常场景分类与处理策略：**
+**异常场景的根本原因分析：**
 
-| 场景 | 原因 | 处理策略 |
-|------|------|---------|
-| SEI 丢失 | 网络丢包、编码器未插入 | 保持上一帧（≤3帧），超过后清空叠加层 |
-| SEI 乱序 | 网络重传、多路流合并 | 按 PTS 排序插入，丢弃 PTS < currentTime-1s 的过期包 |
-| 时间差过大 | 网络抖动、解码延迟 | 设置最大容差（200ms），超出则不渲染 |
-| seek 跳转 | 用户拖动进度条 | 清空 SEI 缓冲，等待新数据 |
-| 直播低延迟 | 缓冲区小，SEI 可能超前 | SEI 超前时等待视频帧追上；视频超前时立即渲染最近 SEI |
+SEI 数据与视频流是两条独立的数据通路（即使都嵌在同一个 TS/FMP4 容器里），在网络传输、解复用、解码等各个环节都可能产生时序偏差：
+
+- **丢失**：网络丢包导致含 SEI 的 segment 未到达，或编码器在某些帧未插入 SEI
+- **乱序**：TCP 重传、CDN 多路合并导致 segment 到达顺序与 PTS 顺序不一致
+- **超前**：SEI 解析（纯 CPU）比视频解码（GPU 硬解）快，SEI 先于对应帧到达渲染队列
+- **滞后**：网络抖动导致 SEI 晚于对应帧到达，此时视频帧已呈现但 SEI 还未就绪
+
+**各场景处理策略详解：**
+
+| 场景 | 检测方式 | 处理策略 | 原因 |
+|------|---------|---------|------|
+| SEI 丢失 | `query()` 返回 miss | 保持上一帧（≤N帧），超过后清空 | 短暂丢失保持可避免目标框闪烁，长时间丢失说明数据已失效 |
+| SEI 乱序 | 新 PTS < lastValidPts - 1s | 丢弃该包 | 超过 1 秒的乱序包已无渲染价值 |
+| SEI 超前 | PTS > video.currentTime + tolerance | 存入缓冲等待 | 不立即渲染，等视频帧追上来 |
+| SEI 滞后 | PTS < video.currentTime - tolerance | 容差内近似匹配，超出则 miss | 轻微滞后可容忍，严重滞后说明网络问题 |
+| seek 跳转 | `video.onseeked` 事件 | 清空全部缓冲 | seek 后 PTS 跳变，旧数据全部失效 |
+| 直播低延迟 | 缓冲区 < 500ms | 放宽容差到 100ms，优先渲染最近 SEI | 直播场景宁可有轻微错位也不能卡顿 |
+
+**"保持上一帧"策略的边界条件：**
+
+保持帧数阈值（`maxMissingFrames`）的选取需要权衡：
+- 太小（如 1）：网络轻微抖动就会导致目标框闪烁消失
+- 太大（如 30）：目标已经移走但框还停留在原位，产生"幽灵框"
+
+实践中建议 3~5 帧（约 100~167ms@30fps），超过后清空。对于安防场景可以适当放大（目标移动慢），对于自动驾驶场景应缩小（目标移动快，旧位置信息危险）。
 
 ### 代码示例
 
@@ -664,6 +780,21 @@ video.requestVideoFrameCallback((now, { mediaTime }) => {
 
 在安防监控、自动驾驶标注等场景中，SEI 数据可能包含数百个目标框、轨迹点、语义分割掩码，每帧数据量达数十 KB，且需要 30fps 实时渲染。如何设计一个既保证帧级对齐又保证高性能的完整系统？
 
+**典型业务场景的数据规模：**
+
+| 场景 | SEI 内容 | 单帧数据量 | 30fps 带宽 |
+|------|---------|-----------|-----------|
+| 安防监控 | 人脸框 + 车牌框 | ~2KB | ~60KB/s |
+| 自动驾驶 | 目标框 + 语义分割 + 轨迹 | ~30KB | ~900KB/s |
+| 直播互动 | 弹幕位置 + 礼物特效坐标 | ~5KB | ~150KB/s |
+| 体育赛事 | 球员追踪 + 战术标注 | ~10KB | ~300KB/s |
+
+**性能瓶颈分析：**
+
+- **解析瓶颈**：NALU 扫描是 O(n) 字节遍历，4K 60fps 码流每秒约 50MB，主线程同步解析会阻塞 UI
+- **渲染瓶颈**：每帧清空 Canvas 全量重绘，100 个目标框 × 30fps = 3000 次 `strokeRect`/s
+- **内存瓶颈**：SEI 缓冲无限增长，长时间播放后 Map 可能积累数千条记录
+
 ### 方案设计
 
 **整体架构（三线程模型）：**
@@ -675,7 +806,7 @@ video.requestVideoFrameCallback((now, { mediaTime }) => {
 │  │ MSE/HLS  │───▶│ SEI 缓冲队列 │◀───│ rVFC 回调 │  │
 │  │ 视频播放  │    │ (PTS → data) │    │ Canvas 渲染│  │
 │  └──────────┘    └──────────────┘    └───────────┘  │
-│       │ ArrayBuffer transfer（零拷贝）               │
+│       │ buf.slice(0) + transfer（零拷贝）            │
 └───────┼─────────────────────────────────────────────┘
         ↓
 ┌───────────────────┐
@@ -695,11 +826,34 @@ video.requestVideoFrameCallback((now, { mediaTime }) => {
 
 **各层职责划分：**
 
-| 线程 | 职责 | 不做什么 |
-|------|------|---------|
-| 主线程 | 视频播放、rVFC 回调、Canvas 绘制、用户交互 | 不做 SEI 解析 |
-| SEI Worker | NALU 扫描、DataView 解析、JSON 序列化 | 不操作 DOM |
-| Render Worker | 热力图/掩码的 OffscreenCanvas 渲染 | 不做业务逻辑 |
+| 线程 | 职责 | 不做什么 | 通信方式 |
+|------|------|---------|---------|
+| 主线程 | 视频播放、rVFC 回调、Canvas 绘制、用户交互 | 不做 SEI 解析 | postMessage → Worker |
+| SEI Worker | NALU 扫描、DataView 解析 | 不操作 DOM，不做渲染 | postMessage → 主线程 |
+| Render Worker | 热力图/掩码的 OffscreenCanvas 渲染 | 不做业务逻辑 | transferToImageBitmap → 主线程 |
+
+**SEI 缓冲队列的内存上限设计：**
+
+```js
+// 按时间窗口限制：只保留最近 N 秒的 SEI
+const MAX_BUFFER_DURATION = 3; // 秒
+
+// 按条数限制：防止极端情况下内存爆炸
+const MAX_BUFFER_SIZE = 300; // 条（30fps × 10s）
+
+// 清理策略：优先清理最旧的条目
+const cleanup = (buffer, currentPts) => {
+  // 时间窗口清理
+  for (const [key] of buffer) {
+    if (key < currentPts - MAX_BUFFER_DURATION) buffer.delete(key);
+    else break;
+  }
+  // 条数上限清理（兜底）
+  while (buffer.size > MAX_BUFFER_SIZE) {
+    buffer.delete(buffer.keys().next().value);
+  }
+};
+```
 
 ### 关键代码
 
